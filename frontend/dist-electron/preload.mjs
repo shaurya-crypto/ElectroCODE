@@ -37,7 +37,7 @@ electron.contextBridge.exposeInMainWorld("electronAPI", {
 
   // Device File System
   listFiles:      (args) => electron.ipcRenderer.invoke("hardware:listFiles", args),
-  deviceReadFile: (args) => electron.ipcRenderer.invoke("hardware:readFile", args),
+  readFile: (args) => electron.ipcRenderer.invoke("hardware:readFile", args),
   writeFile:      (args) => electron.ipcRenderer.invoke("hardware:writeFile", args),
 
   // AI

@@ -5,29 +5,59 @@ import { useAppStore } from '../../store/useAppStore'
 type UploadState = 'idle' | 'uploading' | 'success' | 'error'
 
 export default function UploadButton() {
-  const { isConnected, selectedDevice, activeTabId, tabs, addTerminalLine } = useAppStore()
+  const { isConnected, selectedPort, activeTabId, tabs, addTerminalLine, activeTerminalId } = useAppStore()
   const [state, setState] = useState<UploadState>('idle')
   const activeTab = tabs.find(t => t.id === activeTabId)
 
   async function handleUpload() {
     if (!isConnected || !activeTab) return
     setState('uploading')
-    addTerminalLine('\x1b[36m Uploading ' + activeTab.name + '...\x1b[0m')
+    addTerminalLine(activeTerminalId, '\x1b[36m Uploading ' + activeTab.name + '...\x1b[0m')
 
-    // Simulate upload
-    await new Promise(r => setTimeout(r, 1800))
+    const win = window as any
+    const port = selectedPort
 
-    const success = Math.random() > 0.1 // 90% success rate in demo
-    if (success) {
-      setState('success')
-      addTerminalLine('\x1b[32m✓ Uploaded successfully to ' + (selectedDevice ?? 'device') + '\x1b[0m')
-      addTerminalLine('\x1b[90mRunning ' + activeTab.name + '...\x1b[0m')
-      addTerminalLine('\x1b[36m>>> \x1b[0m')
-    } else {
+    try {
+      // Ask for filename
+      const defaultName = activeTab.name || 'main.py'
+      const fileName = await useAppStore.getState().showPrompt(`Save to ${useAppStore.getState().interpreter?.label || 'Device'} as:`, defaultName)
+      
+      if (!fileName) {
+        setState('idle')
+        return
+      }
+
+      const devPath = fileName.startsWith('/') ? fileName : `/${fileName}`
+      
+      const fileExists = useAppStore.getState().deviceFileTree?.[0]?.children?.some((f: any) => f.filePath === devPath || f.name === fileName.replace(/^\//, ''))
+      if (fileExists) {
+        addTerminalLine(activeTerminalId, `\x1b[33m⚠ Warning: File "${fileName}" already exists on device. Overwriting...\x1b[0m`)
+      }
+
+      addTerminalLine(activeTerminalId, `> Uploading ${fileName} to device...`)
+      
+      const result = await win.electronAPI?.writeFile?.({
+        port: port,
+        filePath: devPath,
+        content: activeTab.content
+      })
+      
+      if (result && result.success) {
+        setState('success')
+        addTerminalLine(activeTerminalId, `\x1b[32m✓ Uploaded ${fileName} to device.\x1b[0m`)
+        // ensure complete tree load before touching monitor
+        await useAppStore.getState().fetchDeviceFiles()
+      } else {
+        setState('error')
+        addTerminalLine(activeTerminalId, '\x1b[31m✗ Upload failed: ' + (result?.message || 'Unknown error') + '\x1b[0m')
+      }
+    } catch (err: any) {
       setState('error')
-      addTerminalLine('\x1b[31m✗ Upload failed. Check connection.\x1b[0m')
+      addTerminalLine(activeTerminalId, '\x1b[31m✗ Upload failed: ' + err.message + '\x1b[0m')
+    } finally {
+      await win.electronAPI?.startMonitor?.({ port, baudRate: 115200 })
+      setTimeout(() => setState('idle'), 3000)
     }
-    setTimeout(() => setState('idle'), 3000)
   }
 
   const disabled = !isConnected || !activeTab || state === 'uploading'

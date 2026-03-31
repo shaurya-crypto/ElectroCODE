@@ -87,10 +87,16 @@ export default function EditorTabs() {
     
     // Prompt for filename if it's the first save, or let them change it
     const defaultName = activeTab.filePath?.startsWith('/') ? activeTab.filePath.replace('/', '') : activeTab.name
-    const name = window.prompt(`Save to ${interpreter?.label} as:`, defaultName)
+    const name = await useAppStore.getState().showPrompt(`Save to ${interpreter?.label} as:`, defaultName)
     if (!name) return // Cancelled
     
     const devPath = name.startsWith('/') ? name : `/${name}`
+    
+    const fileExists = useAppStore.getState().deviceFileTree?.[0]?.children?.some((f: any) => f.filePath === devPath || f.name === name.replace(/^\//, ''))
+    if (fileExists) {
+      addTerminalLine(activeTerminalId, `\x1b[33m⚠ Warning: File "${name}" already exists on device. Overwriting...\x1b[0m`)
+    }
+
     addTerminalLine(activeTerminalId, `> Saving ${devPath} to device...`)
     setTerminalOpen(true)
     
@@ -104,8 +110,12 @@ export default function EditorTabs() {
     })
     
     if (response.success) {
-      // Update tab meta to reflect new device file path
-      useAppStore.getState().updateTabMeta(activeTab.id, { name: name.split('/').pop() || name, filePath: devPath })
+      // Update tab meta to reflect new device file path and source
+      useAppStore.getState().updateTabMeta(activeTab.id, { 
+        name: name.split('/').pop() || name, 
+        filePath: devPath,
+        source: 'device' 
+      })
       saveTab(activeTab.id)
       showNotification('Saved to device', 'success')
       // Refresh tree

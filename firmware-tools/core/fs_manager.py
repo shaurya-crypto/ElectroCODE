@@ -6,14 +6,21 @@ import time
 
 def run_cmd(cmd, timeout=15):
     """Run a command and return stripped stdout. Exits on failure."""
-    try:
-        result = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
-    except subprocess.TimeoutExpired:
-        print(json.dumps({"error": "Command timed out"}))
-        sys.exit(1)
+    for attempt in range(5):
+        try:
+            result = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
+            if result.returncode == 0:
+                break
+            time.sleep(1)
+        except subprocess.TimeoutExpired:
+            if attempt == 4:
+                print(json.dumps({"error": "Command timed out"}))
+                sys.exit(1)
+            time.sleep(1)
 
     if result.returncode != 0:
-        print(json.dumps({"error": result.stderr.strip() or "Command failed"}))
+        err_msg = result.stderr.strip() or result.stdout.strip() or "Command failed"
+        print(json.dumps({"error": err_msg}))
         sys.exit(1)
 
     out = result.stdout.strip()
@@ -33,10 +40,9 @@ def run_cmd(cmd, timeout=15):
 
 def list_files(port, target_path=""):
     """Runs code on the Pico to get its files formatted as JSON."""
-    mpy_code = f"""
-import os, json
+    mpy_code = f"""import os, json
 try:
-    path = '{target_path}' if '{target_path}' else '.'
+    path = {repr(target_path)} if {repr(target_path)} else '.'
     items = []
     for f in os.listdir(path):
         try:
@@ -53,31 +59,60 @@ except Exception as e:
     output = run_cmd(cmd)
     print(output)
 
+def strip_leading_slash(path):
+    return path.lstrip('/') if path else path
+
 def read_file(port, filename):
-    """Uses mpremote 'cat' to cleanly read the contents of a specific file."""
-    cmd = [sys.executable, "-m", "mpremote", "connect", port, "cat", filename]
+    filename = filename.lstrip("/")
+
+    cmd = [
+        sys.executable, "-m", "mpremote",
+        "connect", port,
+        "fs", "cat", filename
+    ]
+
     try:
-        result = subprocess.run(cmd, capture_output=True, text=True, timeout=15)
-    except subprocess.TimeoutExpired:
-        print(json.dumps({"error": "Timed out reading file"}))
-        return
+        for attempt in range(5):
+            result = subprocess.run(
+                cmd,
+                capture_output=True,
+                text=True,
+                encoding="utf-8",     # ✅ FIX
+                errors="ignore",      # ✅ VERY IMPORTANT
+                timeout=15
+            )
+            if result.returncode == 0:
+                break
+            time.sleep(1)
 
-    if result.returncode != 0:
-        print(json.dumps({"error": result.stderr.strip() or "Failed to read file"}))
-        return
+        if result.returncode != 0:
+            print(json.dumps({"error": result.stderr.strip() or "Failed to read file"}))
+            return
 
-    content = result.stdout
-    # mpremote cat outputs raw file content to stdout - just use it directly
-    print(json.dumps({"content": content}))
+        out = result.stdout or ""   # ✅ avoid None crash
+
+        # Clean "Connected to ..." line
+        lines = out.splitlines()
+        if lines and "Connected to" in lines[0]:
+            content = "\n".join(lines[1:])
+        else:
+            content = out
+
+        print(json.dumps({"content": content}))
+
+    except Exception as e:
+        print(json.dumps({"error": str(e)}))
 
 def delete_file(port, filename):
     """Uses mpremote 'rm' to delete a file."""
+    filename = strip_leading_slash(filename)
     cmd = [sys.executable, "-m", "mpremote", "connect", port, "rm", filename]
     run_cmd(cmd)
     print(json.dumps({"success": True}))
 
 def write_file(port, device_path, local_path):
     """Uses mpremote 'fs cp' to copy a local file to the device."""
+    device_path = strip_leading_slash(device_path)
     cmd = [sys.executable, "-m", "mpremote", "connect", port, "fs", "cp", local_path, f":{device_path}"]
     run_cmd(cmd)
     print(json.dumps({"success": True}))

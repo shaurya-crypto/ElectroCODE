@@ -14,6 +14,13 @@ const RENDERER_DIST = path.join(process.env.APP_ROOT, "dist");
 process.env.VITE_PUBLIC = VITE_DEV_SERVER_URL ? path.join(process.env.APP_ROOT, "public") : RENDERER_DIST;
 let win;
 let monitorProcess = null;
+function getPythonExe() {
+  const thonnyPath = path.join(os.homedir(), "AppData", "Local", "Programs", "Thonny", "python.exe");
+  if (fs.existsSync(thonnyPath)) {
+    return thonnyPath;
+  }
+  return "python";
+}
 function createWindow() {
   win = new BrowserWindow({
     width: 1200,
@@ -42,14 +49,24 @@ async function stopMonitorNative() {
       const proc = monitorProcess;
       monitorProcess = null;
       proc.on("close", () => {
-        setTimeout(() => resolve(true), 800);
+        setTimeout(() => resolve(true), 1200);
       });
       proc.kill();
-      setTimeout(() => resolve(true), 3e3);
+      setTimeout(() => {
+        try {
+          proc.kill("SIGKILL");
+        } catch {
+        }
+        resolve(true);
+      }, 4e3);
     } else {
       resolve(true);
     }
   });
+}
+async function withPortAccess(_port, operation) {
+  await stopMonitorNative();
+  return await operation();
 }
 function setupIpcHandlers() {
   const projectRoot = path.join(process.env.APP_ROOT, "..");
@@ -175,7 +192,7 @@ MODEL=${config.model || ""}
     return new Promise((resolve) => {
       console.log("[ElectroAI] Scanning serial ports...");
       exec(
-        `python -c "import json,serial.tools.list_ports;print(json.dumps([{'path':p.device,'description':p.description or '','manufacturer':p.manufacturer or ''} for p in serial.tools.list_ports.comports()]))"`,
+        `"${getPythonExe()}" -c "import json,serial.tools.list_ports;print(json.dumps([{'path':p.device,'description':p.description or '','manufacturer':p.manufacturer or ''} for p in serial.tools.list_ports.comports()]))"`,
         { timeout: 1e4 },
         (err, stdout, stderr) => {
           if (err) {
@@ -214,7 +231,7 @@ MODEL=${config.model || ""}
           resolve(result);
         }
       };
-      const ser = spawn("python", [
+      const ser = spawn(getPythonExe(), [
         "-c",
         `
 import serial, sys, time
@@ -299,7 +316,7 @@ except Exception as e:
             "uploader.py"
           );
           execFile(
-            "python",
+            getPythonExe(),
             [
               scriptPath,
               "--port",
@@ -342,7 +359,7 @@ except Exception as e:
         "serial",
         "monitor.py"
       );
-      monitorProcess = spawn("python", [
+      monitorProcess = spawn(getPythonExe(), [
         scriptPath,
         "--port",
         port,
@@ -367,123 +384,145 @@ except Exception as e:
     await stopMonitorNative();
     return { success: true };
   });
-  ipcMain.handle("hardware:listFiles", async (event, { port }) => {
-    return new Promise((resolve) => {
-      const scriptPath = path.join(
-        projectRoot,
-        "firmware-tools",
-        "core",
-        "fs_manager.py"
-      );
-      exec(
-        `python "${scriptPath}" --port ${port} --action list`,
-        (error, stdout) => {
-          if (error) {
-            resolve({ error: "Failed to read device" });
-            return;
-          }
-          try {
-            const files = JSON.parse(stdout.trim());
-            resolve(files);
-          } catch (e) {
-            resolve({ error: "Invalid data from device" });
-          }
-        }
-      );
-    });
-  });
-  ipcMain.handle("hardware:readFile", async (event, { port, filePath }) => {
-    return new Promise((resolve) => {
-      const scriptPath = path.join(
-        projectRoot,
-        "firmware-tools",
-        "core",
-        "fs_manager.py"
-      );
-      exec(
-        `python "${scriptPath}" --port ${port} --action read --path "${filePath}"`,
-        (error, stdout) => {
-          try {
-            const data = JSON.parse(stdout.trim());
-            resolve(data.content);
-          } catch (e) {
-            resolve(null);
-          }
-        }
-      );
-    });
-  });
-  ipcMain.handle(
-    "hardware:writeFile",
-    async (event, { port, filePath, content }) => {
+  ipcMain.handle("hardware:listFiles", async (_event, { port }) => {
+    return withPortAccess(port, () => {
       return new Promise((resolve) => {
-        const tempFilePath = path.join(
-          os.tmpdir(),
-          "electro_write_temp_" + Date.now() + ".py"
-        );
-        try {
-          fs.writeFileSync(tempFilePath, content, "utf-8");
-        } catch (e) {
-          resolve({ success: false, message: "Temp file error" });
-          return;
-        }
         const scriptPath = path.join(
           projectRoot,
           "firmware-tools",
           "core",
           "fs_manager.py"
         );
-        execFile(
-          "python",
-          [
-            scriptPath,
-            "--port",
-            port,
-            "--action",
-            "write",
-            "--path",
-            filePath,
-            "--localpath",
-            tempFilePath
-          ],
-          (error, stdout, stderr) => {
-            try {
-              fs.unlinkSync(tempFilePath);
-            } catch (e) {
-            }
+        exec(
+          `"${getPythonExe()}" "${scriptPath}" --port ${port} --action list`,
+          { timeout: 3e4 },
+          (error, stdout) => {
             if (error) {
-              resolve({ success: false, message: stderr || error.message });
-            } else {
-              resolve({ success: true });
+              console.error("[ElectroAI] listFiles error:", error.message);
+              resolve({ error: "Failed to read device" });
+              return;
+            }
+            try {
+              const files = JSON.parse(stdout.trim());
+              resolve(files);
+            } catch (e) {
+              console.error("[ElectroAI] listFiles parse error:", stdout);
+              resolve({ error: "Invalid data from device" });
             }
           }
         );
       });
-    }
-  );
-  ipcMain.handle("hardware:deleteFile", async (event, { port, filePath }) => {
-    return new Promise((resolve) => {
-      const scriptPath = path.join(
-        projectRoot,
-        "firmware-tools",
-        "core",
-        "fs_manager.py"
-      );
-      exec(
-        `python "${scriptPath}" --port ${port} --action delete --path "${filePath}"`,
-        (error, stdout) => {
-          if (error) {
-            resolve({ success: false, message: "Failed to delete device file" });
+    });
+  });
+  ipcMain.handle("hardware:readFile", async (_event, { port, filePath }) => {
+    return withPortAccess(port, () => {
+      return new Promise((resolve) => {
+        const scriptPath = path.join(
+          projectRoot,
+          "firmware-tools",
+          "core",
+          "fs_manager.py"
+        );
+        exec(
+          `"${getPythonExe()}" "${scriptPath}" --port ${port} --action read --path "${filePath}"`,
+          { timeout: 3e4 },
+          (error, stdout, stderr) => {
+            if (error) {
+              console.error("[ElectroAI] readFile error:", error.message);
+              resolve({ error: stderr || error.message });
+              return;
+            }
+            try {
+              const data = JSON.parse(stdout.trim());
+              resolve(data);
+            } catch (e) {
+              console.error("[ElectroAI] readFile parse error:", stdout);
+              resolve({ error: "Invalid response from device" });
+            }
+          }
+        );
+      });
+    });
+  });
+  ipcMain.handle(
+    "hardware:writeFile",
+    async (_event, { port, filePath, content }) => {
+      return withPortAccess(port, () => {
+        return new Promise((resolve) => {
+          const tempFilePath = path.join(
+            os.tmpdir(),
+            "electro_write_temp_" + Date.now() + ".py"
+          );
+          try {
+            fs.writeFileSync(tempFilePath, content, "utf-8");
+          } catch (e) {
+            resolve({ success: false, message: "Temp file error" });
             return;
           }
-          try {
-            const data = JSON.parse(stdout.trim());
-            resolve(data);
-          } catch (e) {
-            resolve({ success: false, message: "Invalid output from device" });
+          const scriptPath = path.join(
+            projectRoot,
+            "firmware-tools",
+            "core",
+            "fs_manager.py"
+          );
+          execFile(
+            getPythonExe(),
+            [
+              scriptPath,
+              "--port",
+              port,
+              "--action",
+              "write",
+              "--path",
+              filePath,
+              "--localpath",
+              tempFilePath
+            ],
+            { timeout: 3e4 },
+            (error, stdout, stderr) => {
+              try {
+                fs.unlinkSync(tempFilePath);
+              } catch (e) {
+              }
+              if (error) {
+                console.error("[ElectroAI] writeFile error:", stderr || error.message);
+                resolve({ success: false, message: stderr || error.message });
+              } else {
+                console.log("[ElectroAI] writeFile success:", filePath);
+                resolve({ success: true });
+              }
+            }
+          );
+        });
+      });
+    }
+  );
+  ipcMain.handle("hardware:deleteFile", async (_event, { port, filePath }) => {
+    return withPortAccess(port, () => {
+      return new Promise((resolve) => {
+        const scriptPath = path.join(
+          projectRoot,
+          "firmware-tools",
+          "core",
+          "fs_manager.py"
+        );
+        exec(
+          `"${getPythonExe()}" "${scriptPath}" --port ${port} --action delete --path "${filePath}"`,
+          { timeout: 3e4 },
+          (error, stdout) => {
+            if (error) {
+              resolve({ success: false, message: "Failed to delete device file" });
+              return;
+            }
+            try {
+              const data = JSON.parse(stdout.trim());
+              resolve(data);
+            } catch (e) {
+              resolve({ success: false, message: "Invalid output from device" });
+            }
           }
-        }
-      );
+        );
+      });
     });
   });
   ipcMain.handle("ai:generate", async (_event, _args) => {

@@ -1,4 +1,4 @@
-import { useCallback, useRef, useEffect } from 'react'
+import { useCallback, useRef, useEffect, useState } from 'react'
 import { Files, Cpu, Settings, Bot, ChevronDown, ChevronUp, GitBranch, AlertTriangle, Circle } from 'lucide-react'
 import { useAppStore } from '../store/useAppStore'
 import { subscribeToMcp } from '../store/mcpClient'
@@ -24,7 +24,16 @@ export default function EditorPage() {
     theme,
     notification, clearNotification,
     newUntitledTab, saveTab, showNotification,
+    promptConfig, resolvePrompt,
   } = useAppStore()
+
+  // Internal Prompt State
+  const [promptValue, setPromptValue] = useState('')
+  useEffect(() => {
+    if (promptConfig) {
+      setPromptValue(promptConfig.defaultValue || '')
+    }
+  }, [promptConfig])
 
   const activeTab = tabs.find(t => t.id === activeTabId)
   const isDirty = activeTab ? activeTab.content !== activeTab.savedContent : false
@@ -354,6 +363,42 @@ export default function EditorPage() {
           onClick={clearNotification}
         >
           {notification.msg}
+        </div>
+      )}
+
+      {/* ── Prompt Modal ── */}
+      {promptConfig && (
+        <div style={{
+          position: 'fixed', inset: 0, backgroundColor: 'rgba(0,0,0,0.5)', zIndex: 9999,
+          display: 'flex', alignItems: 'center', justifyContent: 'center'
+        }}>
+          <div className="anim-fade" style={{ background: 'var(--bg-surface)', padding: 20, borderRadius: 8, width: 300, border: '1px solid var(--border)' }}>
+            <h3 style={{ margin: '0 0 10px 0', fontSize: 14 }}>{promptConfig.msg}</h3>
+            <input 
+              autoFocus
+              value={promptValue} 
+              onChange={e => setPromptValue(e.target.value)} 
+              style={{ width: '100%', padding: 8, boxSizing: 'border-box', marginBottom: 15, background: 'var(--bg-elevated)', color: 'var(--text-primary)', border: '1px solid var(--border)', borderRadius: 4 }}
+              onKeyDown={e => {
+                if (e.key === 'Enter') resolvePrompt(promptValue)
+                if (e.key === 'Escape') resolvePrompt(null)
+              }}
+            />
+            <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 10 }}>
+              <button 
+                 onClick={() => resolvePrompt(null)} 
+                 style={{ padding: '6px 12px', background: 'transparent', color: 'var(--text-primary)', border: '1px solid var(--border)', borderRadius: 4, cursor: 'pointer' }}
+              >
+                Cancel
+              </button>
+              <button 
+                 onClick={() => resolvePrompt(promptValue)} 
+                 style={{ padding: '6px 12px', background: 'var(--accent)', color: '#000', border: 'none', borderRadius: 4, cursor: 'pointer', fontWeight: 500 }}
+              >
+                OK
+              </button>
+            </div>
+          </div>
         </div>
       )}
     </div>

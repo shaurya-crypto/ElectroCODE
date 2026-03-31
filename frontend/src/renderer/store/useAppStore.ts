@@ -1,6 +1,5 @@
 import { create } from "zustand";
 import { persist } from "zustand/middleware";
-import { getLanguageFromFilename, FileIcon } from "../utils/Fileicon";
 import { sendMcpEvent } from "./mcpClient";
 
 // ── Types ──────────────────────────────────────────────────────
@@ -236,16 +235,7 @@ const defaultTerminal: TerminalInstance = {
   lines: ["Electro CODE - Serial Monitor", "Connect to a device to begin.", ""],
 };
 
-const defaultTab: FileTab = {
-  id: "untitled-1",
-  name: "untitled-1.py",
-  filePath: null,
-  // ADD YOUR PRINT STATEMENT HERE:
-  content: 'print("Hello from the Zustand default state!")\n',
-  savedContent: "",
-  language: "python",
-  source: "local",
-};
+// defaultTab removed because it is unused
 
 const defaultTree: FileNode[] = [];
 
@@ -349,6 +339,11 @@ interface AppStore {
     type?: "info" | "success" | "error" | "warning",
   ) => void;
   clearNotification: () => void;
+
+  // Prompts
+  promptConfig: { msg: string; defaultValue: string; resolve: (val: string | null) => void } | null;
+  showPrompt: (msg: string, defaultValue?: string) => Promise<string | null>;
+  resolvePrompt: (val: string | null) => void;
 }
 
 let untitledCount = 1;
@@ -474,14 +469,19 @@ export const useAppStore = create<AppStore>()(
             const port = get().selectedPort;
             if (port) {
               try {
+                await win.electronAPI?.stopMonitor?.();
                 await win.electronAPI?.writeFile?.({ port, filePath: tab.filePath, content: tab.content });
-              } catch (e) {}
+              } catch (e) {
+                console.error(e)
+              } finally {
+                await win.electronAPI?.startMonitor?.({ port, baudRate: 115200 });
+              }
             }
           } else {
             // Save to local PC
             try {
               await win.electronAPI?.createFile?.({ filePath: tab.filePath, content: tab.content });
-            } catch (e) {}
+            } catch (e) { }
           }
           set((s) => ({
             tabs: s.tabs.map((t) =>
@@ -540,7 +540,7 @@ export const useAppStore = create<AppStore>()(
         try {
           // Stop monitor so we can safely access the port
           await (window as any).electronAPI.stopMonitor();
-          
+
           const files = await (window as any).electronAPI.listFiles({ port });
           if (Array.isArray(files)) {
             const children = files.map((f: any) => ({
@@ -615,27 +615,40 @@ export const useAppStore = create<AppStore>()(
       },
       openFolder: async (pathInput) => {
         let targetPath = pathInput;
+
         if (!targetPath) {
-          targetPath = await (window as any).electronAPI.openFolder();
+          const result = await (window as any).electronAPI.openFolder();
+
+          if (typeof result === "object" && result?.folderPath) {
+            targetPath = result.folderPath;
+          } else {
+            targetPath = result;
+          }
         }
-        if (targetPath) {
-          const tree = await (window as any).electronAPI.readDir({
-            dirPath: targetPath,
-          });
-          set({
-            openedFolderPath: targetPath,
-            fileTree: [
-              {
-                id: targetPath,
-                name: targetPath.split(/[/\\]/).pop() || targetPath,
-                type: "folder",
-                filePath: targetPath,
-                expanded: true,
-                children: tree || [],
-              },
-            ],
-          });
+
+        console.log("📂 Final Path:", targetPath);
+
+        if (!targetPath || typeof targetPath !== "string") {
+          console.error("❌ Invalid folder path:", targetPath);
+          return;
         }
+
+        const tree = await (window as any).electronAPI.readDir({
+          dirPath: targetPath,
+        });
+
+        set({
+          openedFolderPath: targetPath,
+          fileTree: [
+            {
+              id: targetPath,
+              name: targetPath.split(/[/\\]/).pop() || targetPath,
+              type: "folder",
+              filePath: targetPath,
+              children: tree || [],
+            },
+          ],
+        });
       },
       openedFolderPath: null,
       refreshLocalFolder: async () => {
@@ -752,6 +765,21 @@ export const useAppStore = create<AppStore>()(
         setTimeout(() => set({ notification: null }), 3500);
       },
       clearNotification: () => set({ notification: null }),
+
+      // Prompts
+      promptConfig: null,
+      showPrompt: (msg, defaultValue = '') => {
+        return new Promise((resolve) => {
+          set({ promptConfig: { msg, defaultValue, resolve } });
+        });
+      },
+      resolvePrompt: (val) => {
+        const { promptConfig } = get();
+        if (promptConfig) {
+          promptConfig.resolve(val);
+          set({ promptConfig: null });
+        }
+      },
     }),
     {
       name: "electrocode-storage",

@@ -113,7 +113,7 @@ useEffect(() => {
         store.newUntitledTab();
         return;
       }
-      const name = window.prompt('File name (with extension):');
+      const name = await store.showPrompt('File name (with extension):');
       if (!name) return;
       const filePath = base.replace(/\\/g, '/') + '/' + name;
       const result = await (window as any).electronAPI?.createFile?.({ filePath, content: '' });
@@ -182,9 +182,14 @@ useEffect(() => {
       }
       // Prompt for filename
       const defaultName = activeTab.filePath?.startsWith('/') ? activeTab.filePath.replace('/', '') : activeTab.name
-      const name = window.prompt(`Save to ${interpreter.label} as:`, defaultName)
+      const name = await useAppStore.getState().showPrompt(`Save to ${interpreter.label} as:`, defaultName)
       if (!name) return
       const devPath = name.startsWith('/') ? name : `/${name}`
+      
+      const fileExists = useAppStore.getState().deviceFileTree?.[0]?.children?.some((f: any) => f.filePath === devPath || f.name === name.replace(/^\//, ''))
+      if (fileExists) {
+        addTerminalLine(activeTerminalId, `\x1b[33m⚠ Warning: File "${name}" already exists. Overwriting...\x1b[0m`)
+      }
       
       setIsFlashing(true)
       addTerminalLine(activeTerminalId, `> Saving ${devPath} to device...`)
@@ -293,26 +298,40 @@ useEffect(() => {
          showNotification('Upload already in progress...', 'warning')
          return
        }
-       clearTerminal(activeTerminalId)
-       addTerminalLine(activeTerminalId, `> Uploading ${activeTab.name} to device...`)
+
+       // Ask for filename to save on device
+       const defaultName = activeTab.name || 'main.py'
+       const fileName = await useAppStore.getState().showPrompt(`Save to ${interpreter.label || 'Device'} as:`, defaultName)
+       if (!fileName) return
+
+       const devPath = fileName.startsWith('/') ? fileName : `/${fileName}`
+       
+       const fileExists = useAppStore.getState().deviceFileTree?.[0]?.children?.some((f: any) => f.filePath === devPath || f.name === fileName.replace(/^\//, ''))
+       if (fileExists) {
+         addTerminalLine(activeTerminalId, `\x1b[33m⚠ Warning: File "${fileName}" already exists on device. Overwriting...\x1b[0m`)
+       }
+       addTerminalLine(activeTerminalId, `> Uploading ${fileName} to device...`)
        setTerminalOpen(true)
        setIsFlashing(true)
 
        try {
-         const response = await window.ipcRenderer.invoke('hardware:flash', {
-           code: activeTab.content,
+         const response = await (window as any).electronAPI.writeFile({
            port: selectedPort,
-           language: interpreter.language,
-           boardId: interpreter.id
+           filePath: devPath,
+           content: activeTab.content
          })
          if (response.success) {
-           addTerminalLine(activeTerminalId, `✅ Upload complete.`)
+           addTerminalLine(activeTerminalId, `✅ Uploaded ${fileName} to device.`)
            showNotification('Successfully uploaded to device', 'success')
          } else {
            addTerminalLine(activeTerminalId, `❌ Upload Failed: ${response.message}`)
+           showNotification(`Upload failed: ${response.message}`, 'error')
          }
+       } catch (err: any) {
+         addTerminalLine(activeTerminalId, `❌ Upload Failed: ${err.message}`)
        } finally {
          setIsFlashing(false)
+         await useAppStore.getState().fetchDeviceFiles()
        }
     }},
     { separator: true },
