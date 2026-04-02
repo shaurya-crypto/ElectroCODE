@@ -275,12 +275,12 @@ useEffect(() => {
           code: activeTab.content,
           port: selectedPort,
           language: interpreter.language,
-          boardId: interpreter.id
-        })
+          boardId: interpreter.id,
+          deviceName: activeTab.name,
+          mode: 'run'
+        } as any)
 
-        if (response.success) {
-          await window.ipcRenderer.invoke('hardware:startMonitor', { port: selectedPort })
-        } else {
+        if (!response.success) {
           addTerminalLine(activeTerminalId, `❌ Error: ${response.message}`)
         }
       } finally {
@@ -321,7 +321,7 @@ useEffect(() => {
            content: activeTab.content
          })
          if (response.success) {
-           addTerminalLine(activeTerminalId, `✅ Uploaded ${fileName} to device.`)
+           addTerminalLine(activeTerminalId, `\x1b[32m✓ Uploaded ${fileName} to device.\x1b[0m`)
            showNotification('Successfully uploaded to device', 'success')
          } else {
            addTerminalLine(activeTerminalId, `❌ Upload Failed: ${response.message}`)

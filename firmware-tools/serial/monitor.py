@@ -2,6 +2,29 @@ import serial
 import argparse
 import sys
 import time
+import threading
+
+def stdin_listener(ser):
+    """
+    Listen to stdin and forward to serial port.
+    Crucial for sending Ctrl+C (\x03) to stop running code.
+    """
+    try:
+        while True:
+            # On Windows, sys.stdin.read(1) might block.
+            # But since it's a daemon thread, it's fine.
+            char = sys.stdin.read(1)
+            if not char: break
+            if ser and ser.is_open:
+                try:
+                    ser.write(char.encode())
+                    ser.flush()
+                except:
+                    pass
+    except EOFError:
+        pass
+    except Exception:
+        pass
 
 def main():
     parser = argparse.ArgumentParser(description="ElectroAI Serial Monitor")
@@ -9,31 +32,43 @@ def main():
     parser.add_argument('--baud', type=int, default=115200, help="Baud rate (default: 115200)")
     args = parser.parse_args()
 
+    port = args.port
+
     try:
-        # 1. Connect to the chip with retries (Windows sometimes takes a second to release the COM port)
+        # 1. Connect to the chip with retries
         ser = None
         for attempt in range(10):
             try:
-                ser = serial.Serial(args.port, args.baud, timeout=0.5)
+                ser = serial.Serial(port, args.baud, timeout=0.5)
                 break
-            except serial.SerialException:
+            except (serial.SerialException, OSError) as e:
+                err_str = str(e)
                 if attempt == 9:
-                    raise
+                    if "Access is denied" in err_str:
+                        print(f"Error: Port {port} is used by another program (e.g. Thonny or Arduino IDE).")
+                    elif "FileNotFound" in err_str or "device not found" in err_str:
+                        print(f"Error: Device disconnected or port {port} not found.")
+                    else:
+                        print(f"Error: Could not open port {port}. {err_str}")
+                    sys.stdout.flush()
+                    sys.exit(1)
                 time.sleep(0.5)
         
-        # Connected without printing boilerplate for a cleaner terminal experience
-        # We are now a completely PASSIVE monitor. We do not automatically send Ctrl+C or Ctrl+D, 
-        # so we won't interrupt code that is already running from the Uploader.
-        
+        if not ser:
+            sys.exit(1)
 
+        # 2. Start stdin listener thread to bridge commands from Electron to Device
+        t = threading.Thread(target=stdin_listener, args=(ser,), daemon=True)
+        t.start()
 
-        # 6. The Streaming Loop
+        # 3. The Streaming Loop
         buffer = ""
         while True:
             if ser.in_waiting > 0:
                 try:
                     raw_data = ser.read(ser.in_waiting)
-                    buffer += raw_data.decode('utf-8', errors='replace')
+                    decoded = raw_data.decode('utf-8', errors='replace')
+                    buffer += decoded
                     
                     # Print full lines as they come in
                     while '\n' in buffer:
@@ -43,7 +78,7 @@ def main():
                     
                     # Print the REPL prompt instantly without waiting for an Enter key
                     if ">>> " in buffer:
-                        print(">>> ")
+                        sys.stdout.write(">>> ")
                         sys.stdout.flush()
                         buffer = buffer.replace(">>> ", "")
                         
@@ -52,14 +87,20 @@ def main():
             
             time.sleep(0.01) 
 
-    except serial.SerialException:
-        print(f"Error: Could not open port {args.port}. Is Thonny still open?")
+    except (serial.SerialException, OSError) as e:
+        err_str = str(e)
+        if "Access is denied" in err_str:
+            print(f"\n[System] Error: Port {port} is used by another program.")
+        elif "FileNotFound" in err_str or "device not found" in err_str or "disconnected" in err_str.lower():
+            print(f"\n[System] Error: Device disconnected.")
+        else:
+            print(f"\n[System] Error: Serial communication lost. {err_str}")
         sys.stdout.flush()
         sys.exit(1)
     except KeyboardInterrupt:
-        if 'ser' in locals() and ser.is_open:
+        if 'ser' in locals() and ser and ser.is_open:
             ser.close()
         sys.exit(0)
 
 if __name__ == "__main__":
-    main()
+    main()

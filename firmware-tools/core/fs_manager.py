@@ -110,6 +110,15 @@ def delete_file(port, filename):
     run_cmd(cmd)
     print(json.dumps({"success": True}))
 
+def rename_file(port, old_path, new_path):
+    """Uses mpremote 'fs mv' to rename a file or folder on the device."""
+    old_path = strip_leading_slash(old_path)
+    new_path = strip_leading_slash(new_path)
+    # mpremote fs mv :old :new
+    cmd = [sys.executable, "-m", "mpremote", "connect", port, "fs", "mv", f":{old_path}", f":{new_path}"]
+    run_cmd(cmd)
+    print(json.dumps({"success": True}))
+
 def write_file(port, device_path, local_path):
     """Uses mpremote 'fs cp' to copy a local file to the device."""
     device_path = strip_leading_slash(device_path)
@@ -120,8 +129,9 @@ def write_file(port, device_path, local_path):
 def main():
     parser = argparse.ArgumentParser(description="ElectroAI File System Manager")
     parser.add_argument('--port', required=True)
-    parser.add_argument('--action', required=True, choices=['list', 'read', 'delete', 'write'])
-    parser.add_argument('--path', default="", help="File or folder path on the device")
+    parser.add_argument('--action', required=True, choices=['list', 'read', 'delete', 'write', 'rename'])
+    parser.add_argument('--path', default="", help="File or folder path on the device (or old path for rename)")
+    parser.add_argument('--newpath', default="", help="New file or folder path for rename action")
     parser.add_argument('--localpath', default="", help="Local path for writing file")
     args = parser.parse_args()
 
@@ -133,6 +143,8 @@ def main():
         delete_file(args.port, args.path)
     elif args.action == 'write':
         write_file(args.port, args.path, args.localpath)
+    elif args.action == 'rename':
+        rename_file(args.port, args.path, args.newpath)
 
 if __name__ == "__main__":
     main()

@@ -35,10 +35,7 @@ export default function EditorTabs() {
     setTerminalOpen(true)
     setIsFlashing(true)
 
-    // REPL-like headers
-    addTerminalLine(activeTerminalId, `>>> %Run -c $EDITOR_CONTENT`)
-    addTerminalLine(activeTerminalId, '')
-    addTerminalLine(activeTerminalId, 'MPY: soft reboot')
+    addTerminalLine(activeTerminalId, `Running ${activeTab.name}...`)
     addTerminalLine(activeTerminalId, '')
 
     try {
@@ -47,20 +44,22 @@ export default function EditorTabs() {
         port: selectedPort,
         language: interpreter.language,
         boardId: interpreter.id,
-      })
+        deviceName: activeTab.name,
+        mode: 'run'
+      } as any)
 
       if (response.success) {
-        // Start monitoring for live output
-        await (window as any).electronAPI.startMonitor({ port: selectedPort })
+        // Monitor is started by the flash call itself now via spawn
       } else {
-        addTerminalLine(activeTerminalId, `Traceback (most recent call last):`)
-        addTerminalLine(activeTerminalId, `  ${response.message}`)
+        // Error will be printed by the spawn stream usually, but fallback here
+        if (response.message) {
+           addTerminalLine(activeTerminalId, `❌ Error: ${response.message}`)
+        }
       }
     } catch (err: any) {
-      addTerminalLine(activeTerminalId, `Error: ${err.message || String(err)}`)
+      addTerminalLine(activeTerminalId, `❌ Error: ${err.message || String(err)}`)
     } finally {
       setIsFlashing(false)
-      // Show prompt when execution finishes
       addTerminalLine(activeTerminalId, '')
       addTerminalLine(activeTerminalId, '>>>')
     }

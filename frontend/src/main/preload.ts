@@ -55,6 +55,7 @@ contextBridge.exposeInMainWorld("electronAPI", {
   readFile: (args: any) => ipcRenderer.invoke("hardware:readFile", args), 
   writeFile: (args: any) => ipcRenderer.invoke("hardware:writeFile", args),
   deleteFile: (args: any) => ipcRenderer.invoke("hardware:deleteFile", args),
+  renameFile: (args: any) => ipcRenderer.invoke("hardware:renameFile", args),
 
   // AI
   generateCode: (args: any) => ipcRenderer.invoke("ai:generate", args),

@@ -18,136 +18,174 @@ function ContextMenu({ state, onClose }: { state: ContextMenuState; onClose: () 
 
   const actions = []
 
+  // Helper for creating files/folders in a specific directory or device
+  const handleNewFile = async (basePath: string) => {
+    const name = await useAppStore.getState().showPrompt('File name (with extension):')
+    if (!name) return
+    const isWin = basePath.includes('\\')
+    const filePath = basePath + (isWin ? '\\' : '/') + name
+    const result = await (window as any).electronAPI?.createFile?.({ filePath, content: '' })
+    if (result?.success) {
+      await refreshLocalFolder()
+      openTab({
+        id: filePath,
+        name: name,
+        filePath: filePath,
+        content: '',
+        language: getLanguageFromFilename(name),
+        source: 'local'
+      })
+    } else showNotification('Failed to create file', 'error')
+  }
+
+  const handleNewFolder = async (basePath: string) => {
+    const name = await useAppStore.getState().showPrompt('Folder name:')
+    if (!name) return
+    const isWin = basePath.includes('\\')
+    const folderPath = basePath + (isWin ? '\\' : '/') + name
+    const result = await (window as any).electronAPI?.createFolder?.({ folderPath })
+    if (result?.success) refreshLocalFolder()
+    else showNotification('Failed to create folder', 'error')
+  }
+
   if (state.node) {
-    if (state.node.type === 'file') {
+    if (state.isDevice) {
+      // ── DEVICE ACTIONS (ONLY Delete & Rename) ──
       actions.push({
-        label: 'Open',
+        label: 'Rename',
         action: async () => {
           const node = state.node
           if (!node) return
-          const content = state.isDevice
-            ? await (window as any).electronAPI?.readFile?.({ port: selectedPort, filePath: node.filePath })
-            : await (window as any).electronAPI?.fsReadFile?.({ filePath: node.filePath })
-          openTab({
-            id: (state.isDevice ? 'dev_' : '') + node.id,
-            name: node.name,
-            filePath: node.filePath,
-            content: content || '',
-            language: getLanguageFromFilename(node.name),
-            source: state.isDevice ? 'device' : 'local'
-          })
-        }
-      })
-    }
+          const newName = await useAppStore.getState().showPrompt('New name:', node.name)
+          if (!newName || newName === node.name) return
 
-    actions.push({
-      label: 'Rename',
-      action: async () => {
-        const node = state.node
-        if (!node) return
-        const newName = await useAppStore.getState().showPrompt('New name:', node.name)
-        if (!newName || newName === node.name) return
-
-        if (state.isDevice) {
           try {
             await (window as any).electronAPI.stopMonitor()
-            if (node.type === 'file') {
-              const content = await (window as any).electronAPI?.readFile?.({ port: selectedPort, filePath: node.filePath })
-              if (content !== null && content !== undefined) {
-                await (window as any).electronAPI?.writeFile?.({ port: selectedPort, filePath: newName, content })
-                await (window as any).electronAPI?.deleteFile?.({ port: selectedPort, filePath: node.name })
-                await fetchDeviceFiles()
-                showNotification(`Renamed to ${newName}`, 'success')
-              } else showNotification('Failed to read device file for rename', 'error')
+            const res = await (window as any).electronAPI?.renameFile?.({ 
+              port: selectedPort, 
+              oldPath: node.name, 
+              newPath: newName 
+            })
+            if (res?.success) {
+              await fetchDeviceFiles()
+              showNotification(`Renamed to ${newName}`, 'success')
             } else {
-              showNotification('Folder rename on device not supported yet', 'warning')
+              showNotification(`Device rename failed: ${res?.message}`, 'error')
             }
-          } catch { showNotification('Device rename failed', 'error') }
-          finally { await (window as any).electronAPI.startMonitor({ port: selectedPort, baudRate: 115200 }) }
-          return
+          } catch { 
+            showNotification('Device rename failed', 'error') 
+          } finally { 
+            await (window as any).electronAPI.startMonitor({ port: selectedPort, baudRate: 115200 }) 
+          }
         }
+      })
 
-        const isWin = node.filePath.includes('\\')
-        const lastSlash = node.filePath.lastIndexOf(isWin ? '\\' : '/')
-        const dir = node.filePath.substring(0, lastSlash)
-        const newPath = dir + (isWin ? '\\' : '/') + newName
-        const res = await (window as any).electronAPI?.fsRename?.({ oldPath: node.filePath, newPath })
-        if (res?.success) refreshLocalFolder()
-        else showNotification(`Rename failed: ${res?.message}`, 'error')
+      actions.push({
+        label: 'Delete',
+        action: async () => {
+          const node = state.node
+          if (!node) return
+          if (!window.confirm(`Delete ${node.name} from device?`)) return
+
+          try {
+            await (window as any).electronAPI.stopMonitor()
+            const res = await (window as any).electronAPI?.deleteFile?.({ port: selectedPort, filePath: node.name })
+            if (res?.success) await fetchDeviceFiles()
+            else showNotification(`Device delete failed: ${res?.message}`, 'error')
+          } catch {
+            showNotification('Device delete failed', 'error')
+          } finally {
+            await (window as any).electronAPI.startMonitor({ port: selectedPort, baudRate: 115200 })
+          }
+        }
+      })
+    } else {
+      // ── LOCAL FILE/FOLDER ACTIONS ──
+      if (state.node.type === 'file') {
+        actions.push({
+          label: 'Open',
+          action: async () => {
+            const node = state.node
+            if (!node) return
+            const content = await (window as any).electronAPI?.fsReadFile?.({ filePath: node.filePath })
+            openTab({
+              id: node.id,
+              name: node.name,
+              filePath: node.filePath,
+              content: content || '',
+              language: getLanguageFromFilename(node.name),
+              source: 'local'
+            })
+          }
+        })
+      } else {
+        // Folder-specific actions
+        actions.push({
+          label: 'New File',
+          action: () => handleNewFile(state.node!.filePath)
+        })
+        actions.push({
+          label: 'New Folder',
+          action: () => handleNewFolder(state.node!.filePath)
+        })
       }
-    })
 
-    actions.push({
-      label: 'Delete',
-      action: async () => {
-        const node = state.node
-        if (!node) return
-        if (!window.confirm(`Delete ${node.name}?`)) return
+      actions.push({
+        label: 'Rename',
+        action: async () => {
+          const node = state.node
+          if (!node) return
+          const newName = await useAppStore.getState().showPrompt('New name:', node.name)
+          if (!newName || newName === node.name) return
 
-        if (state.isDevice) {
-          await (window as any).electronAPI.stopMonitor()
-          const res = await (window as any).electronAPI?.deleteFile?.({ port: selectedPort, filePath: node.name })
-          if (res?.success) await fetchDeviceFiles()
-          else showNotification(`Device delete failed: ${res?.message}`, 'error')
-          await (window as any).electronAPI.startMonitor({ port: selectedPort, baudRate: 115200 })
-        } else {
+          const isWin = node.filePath.includes('\\')
+          const lastSlash = node.filePath.lastIndexOf(isWin ? '\\' : '/')
+          const dir = node.filePath.substring(0, lastSlash)
+          const newPath = dir + (isWin ? '\\' : '/') + newName
+          const res = await (window as any).electronAPI?.fsRename?.({ oldPath: node.filePath, newPath })
+          if (res?.success) refreshLocalFolder()
+          else showNotification(`Rename failed: ${res?.message}`, 'error')
+        }
+      })
+
+      actions.push({
+        label: 'Delete',
+        action: async () => {
+          const node = state.node
+          if (!node) return
+          if (!window.confirm(`Delete ${node.name}?`)) return
+
           const res = await (window as any).electronAPI?.fsDelete?.({ filePath: node.filePath })
           if (res?.success) refreshLocalFolder()
           else showNotification(`Delete failed: ${res?.message}`, 'error')
         }
-      }
-    })
+      })
 
-    actions.push({
-      label: 'Copy Path',
-      action: () => {
-        if (!state.node) return
-        navigator.clipboard.writeText(state.node.filePath ?? '')
-        showNotification('Path copied', 'success')
-      }
-    })
+      actions.push({
+        label: 'Copy Path',
+        action: () => {
+          if (!state.node) return
+          navigator.clipboard.writeText(state.node.filePath ?? '')
+          showNotification('Path copied', 'success')
+        }
+      })
+    }
   } else {
-    // Root level context menu (background click)
+    // ── ROOT/BACKGROUND CONTEXT MENU ──
     if (!state.isDevice) {
       actions.push({
         label: 'New File',
         action: async () => {
-          const base = openedFolderPath
-          if (!base) { newUntitledTab(); return }
-          const name = await useAppStore.getState().showPrompt('File name (with extension):')
-          if (!name) return
-          const filePath = base.replace(/\\/g, '/') + '/' + name
-          const result = await (window as any).electronAPI?.createFile?.({ filePath, content: '' })
-          if (result?.success) {
-            await refreshLocalFolder()
-            openTab({
-              id: filePath,
-              name: name,
-              filePath: filePath,
-              content: '',
-              language: getLanguageFromFilename(name),
-              source: 'local'
-            })
-          }
-          else showNotification('Failed to create file', 'error')
+          if (!openedFolderPath) { newUntitledTab(); return }
+          handleNewFile(openedFolderPath)
         }
       })
       actions.push({
         label: 'New Folder',
         action: async () => {
-          const base = openedFolderPath
-          if (!base) { showNotification('Open a folder first', 'warning'); return }
-          const name = await useAppStore.getState().showPrompt('Folder name:')
-          if (!name) return
-          const folderPath = base.replace(/\\/g, '/') + '/' + name
-          const result = await (window as any).electronAPI?.createFolder?.({ folderPath })
-          if (result?.success) refreshLocalFolder()
-          else showNotification('Failed to create folder', 'error')
+          if (!openedFolderPath) { showNotification('Open a folder first', 'warning'); return }
+          handleNewFolder(openedFolderPath)
         }
-      })
-      actions.push({
-        label: 'Open in File Explorer',
-        action: () => showNotification('Not implemented', 'info')
       })
     }
   }

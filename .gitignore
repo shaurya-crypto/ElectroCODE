@@ -1,2 +1,5 @@
 /.env
 /test_save.txt
+/node_modules
+/dist
+/out

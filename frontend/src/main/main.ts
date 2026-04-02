@@ -21,6 +21,7 @@ process.env.VITE_PUBLIC = VITE_DEV_SERVER_URL
 let win: BrowserWindow | null;
 let monitorProcess: ChildProcess | null = null; // Keeps track of the live serial monitor
 let currentMonitorPort: string | null = null;
+let currentFlashProcess: ChildProcess | null = null;
 
 function getPythonExe(): string {
   // Check Thonny Python as fallback since Windows Appalias can cause 'python' command to fail
@@ -57,29 +58,58 @@ function createWindow() {
 
 // --- IPC LISTENERS (The Backend Logic) ---
 
-async function stopMonitorNative(): Promise<boolean> {
+async function stopMonitorNative() : Promise<boolean> {
+  // If we are currently flashing/running a script, kill that too
+  if (currentFlashProcess) {
+    try {
+      currentFlashProcess.stdin?.write("\x03"); // Send Ctrl+C to uploader
+      currentFlashProcess.kill();
+    } catch(e) {}
+    currentFlashProcess = null;
+  }
+
   return new Promise((resolve) => {
-    if (monitorProcess) {
-      const proc = monitorProcess;
-      monitorProcess = null;
-      currentMonitorPort = null;
+    if (!monitorProcess) return resolve(true);
 
-      proc.on("close", () => {
-        // Give the OS time to fully release the serial port handle
-        setTimeout(() => resolve(true), 1200);
-      });
+    const proc = monitorProcess;
+    monitorProcess = null;
 
-      proc.kill();
+    let finished = false;
 
-      // Safety: if process does not close within 4s, force-kill and resolve
-      setTimeout(() => {
-        try { proc.kill('SIGKILL'); } catch { }
+    const done = () => {
+      if (!finished) {
+        finished = true;
         resolve(true);
-      }, 4000);
-    } else {
-      currentMonitorPort = null;
-      resolve(true);
-    }
+      }
+    };
+
+    // When process actually stops
+    proc.once("close", done);
+    proc.once("exit", done);
+    proc.once("error", done);
+
+    try {
+      // 🟢 Graceful stop (best for serial / MicroPython)
+      proc.kill("SIGINT"); // like pressing Ctrl+C
+      if (proc.stdin) {
+        proc.stdin.write("\x03"); // Ctrl+C signal to device
+      }
+    } catch { }
+
+    // ⏱ If not stopped, force kill
+    setTimeout(() => {
+      try {
+        proc.kill("SIGTERM");
+      } catch { }
+    }, 1500);
+
+    // ⏱ Final fallback
+    setTimeout(() => {
+      try {
+        proc.kill("SIGKILL");
+      } catch { }
+      done();
+    }, 3000);
   });
 }
 
@@ -350,12 +380,12 @@ except Exception as e:
 
   ipcMain.handle(
     "hardware:flash",
-    async (event, { code, port, language, boardId }) => {
+    async (event, { code, port, language, boardId, deviceName, mode = 'flash' }) => {
       // Must cleanly stop monitor and send Ctrl+C to halt running scripts before flash!
       await stopMonitorNative();
 
       return new Promise((resolve) => {
-        const tempFilePath = path.join(os.tmpdir(), "electro_temp.py");
+        const tempFilePath = path.join(os.tmpdir(), `electro_temp_${Date.now()}.py`);
         try {
           fs.writeFileSync(tempFilePath, code, "utf-8");
         } catch {
@@ -363,7 +393,7 @@ except Exception as e:
           return;
         }
 
-        // Wait for Windows to release COM port lock (stopMonitor already waited 500ms, wait an extra 500ms)
+        // Wait for Windows to release COM port lock
         setTimeout(() => {
           const scriptPath = path.join(
             path.join(process.env.APP_ROOT!, ".."),
@@ -372,38 +402,68 @@ except Exception as e:
             "uploader.py",
           );
 
-          execFile(
-            getPythonExe(),
-            [
-              scriptPath,
-              "--port",
-              port,
-              "--file",
-              tempFilePath,
-              "--language",
-              language,
-              "--board-id",
-              boardId ?? "arduino:avr:uno",
-            ],
-            { timeout: 60000 },
-            (error, stdout, stderr) => {
-              if (error) {
-                resolve({
-                  success: false,
-                  message: stderr.trim() || stdout.trim() || error.message,
-                });
-                return;
-              }
+          const args = [
+            scriptPath,
+            "--port",
+            port,
+            "--file",
+            tempFilePath,
+            "--language",
+            language,
+            "--board-id",
+            boardId ?? "arduino:avr:uno",
+            "--mode",
+            mode
+          ];
 
-              // Replaced inline monitor start. The frontend triggers `hardware:startMonitor` directly!
+          if (deviceName) {
+            args.push("--device-name", deviceName);
+          }
 
+          const flashProc = spawn(getPythonExe(), args);
+          currentFlashProcess = flashProc;
+
+          let fullOutput = "";
+          let hasSentError = false;
+
+          flashProc.stdout.on("data", (data) => {
+            const str = data.toString();
+            fullOutput += str;
+            // Send live output to terminal
+            win?.webContents.send("terminal-output", str);
+          });
+
+          flashProc.stderr.on("data", (data) => {
+            const str = data.toString();
+            fullOutput += str;
+            win?.webContents.send("terminal-output", str);
+          });
+
+          flashProc.on("close", (code) => {
+            currentFlashProcess = null;
+            // Clean up temp file
+            try { fs.unlinkSync(tempFilePath); } catch(e) {}
+
+            if (code !== 0) {
+              const msg = fullOutput.trim() || "Process exited with error";
+              resolve({
+                success: false,
+                message: msg.includes("ERROR:") ? msg.split("ERROR:")[1].trim() : msg,
+              });
+            } else {
               resolve({
                 success: true,
-                message: stdout.trim() || "Upload complete — device running",
+                message: "Success",
               });
-            },
-          );
-        }, 1000);
+            }
+          });
+
+          flashProc.on("error", (err) => {
+            currentFlashProcess = null;
+             resolve({ success: false, message: err.message });
+          });
+
+        }, 1500); 
       });
     },
   );
@@ -598,6 +658,37 @@ except Exception as e:
           (error, stdout) => {
             if (error) {
               resolve({ success: false, message: "Failed to delete device file" });
+              return;
+            }
+            try {
+              const data = JSON.parse(stdout.trim());
+              resolve(data);
+            } catch (e) {
+              resolve({ success: false, message: "Invalid output from device" });
+            }
+          },
+        );
+      });
+    });
+  });
+
+  // 7.7 Hardware - Device File System (Rename File)
+  ipcMain.handle("hardware:renameFile", async (_event, { port, oldPath, newPath }) => {
+    return withPortAccess(port, () => {
+      return new Promise((resolve) => {
+        const scriptPath = path.join(
+          projectRoot,
+          "firmware-tools",
+          "core",
+          "fs_manager.py",
+        );
+
+        exec(
+          `"${getPythonExe()}" "${scriptPath}" --port ${port} --action rename --path "${oldPath}" --newpath "${newPath}"`,
+          { timeout: 30000 },
+          (error, stdout) => {
+            if (error) {
+              resolve({ success: false, message: "Failed to rename device file" });
               return;
             }
             try {

@@ -46,6 +46,7 @@ contextBridge.exposeInMainWorld("electronAPI", {
   readFile: (args) => ipcRenderer.invoke("hardware:readFile", args),
   writeFile: (args) => ipcRenderer.invoke("hardware:writeFile", args),
   deleteFile: (args) => ipcRenderer.invoke("hardware:deleteFile", args),
+  renameFile: (args) => ipcRenderer.invoke("hardware:renameFile", args),
   // AI
   generateCode: (args) => ipcRenderer.invoke("ai:generate", args),
   // Terminal output events

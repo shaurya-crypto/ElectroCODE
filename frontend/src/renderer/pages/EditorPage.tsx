@@ -83,12 +83,12 @@ export default function EditorPage() {
             code: activeTab.content,
             port: store.selectedPort,
             language: store.interpreter.language,
-            boardId: store.interpreter.id
-          }).then(response => {
+            boardId: store.interpreter.id,
+            deviceName: activeTab.name,
+            mode: 'run'
+          } as any).then(response => {
             store.setIsFlashing(false)
-            if (response.success) {
-              window.electronAPI.startMonitor({ port: store.selectedPort! })
-            } else {
+            if (!response.success) {
               store.addTerminalLine(store.activeTerminalId, `❌ Error: ${response.message}`)
             }
           }).catch(err => {

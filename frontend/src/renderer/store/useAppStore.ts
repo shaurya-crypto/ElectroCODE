@@ -738,11 +738,13 @@ export const useAppStore = create<AppStore>()(
           set({ terminals, activeTerminalId: active });
         }
       },
-      addTerminalLine: (id, line) => {
-        sendMcpEvent("telemetry_tick", { line });
+      addTerminalLine: (id, text) => {
+        if (!text) return;
+        sendMcpEvent("telemetry_tick", { line: text });
+        const lines = text.split(/\r?\n/);
         set((s) => ({
           terminals: s.terminals.map((t) =>
-            t.id === id ? { ...t, lines: [...t.lines, line] } : t,
+            t.id === id ? { ...t, lines: [...t.lines, ...lines] } : t,
           ),
         }));
       },

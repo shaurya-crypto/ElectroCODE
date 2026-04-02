@@ -14,6 +14,7 @@ const RENDERER_DIST = path.join(process.env.APP_ROOT, "dist");
 process.env.VITE_PUBLIC = VITE_DEV_SERVER_URL ? path.join(process.env.APP_ROOT, "public") : RENDERER_DIST;
 let win;
 let monitorProcess = null;
+let currentFlashProcess = null;
 function getPythonExe() {
   const thonnyPath = path.join(os.homedir(), "AppData", "Local", "Programs", "Thonny", "python.exe");
   if (fs.existsSync(thonnyPath)) {
@@ -44,24 +45,49 @@ function createWindow() {
   }
 }
 async function stopMonitorNative() {
-  return new Promise((resolve) => {
-    if (monitorProcess) {
-      const proc = monitorProcess;
-      monitorProcess = null;
-      proc.on("close", () => {
-        setTimeout(() => resolve(true), 1200);
-      });
-      proc.kill();
-      setTimeout(() => {
-        try {
-          proc.kill("SIGKILL");
-        } catch {
-        }
-        resolve(true);
-      }, 4e3);
-    } else {
-      resolve(true);
+  var _a;
+  if (currentFlashProcess) {
+    try {
+      (_a = currentFlashProcess.stdin) == null ? void 0 : _a.write("");
+      currentFlashProcess.kill();
+    } catch (e) {
     }
+    currentFlashProcess = null;
+  }
+  return new Promise((resolve) => {
+    if (!monitorProcess) return resolve(true);
+    const proc = monitorProcess;
+    monitorProcess = null;
+    let finished = false;
+    const done = () => {
+      if (!finished) {
+        finished = true;
+        resolve(true);
+      }
+    };
+    proc.once("close", done);
+    proc.once("exit", done);
+    proc.once("error", done);
+    try {
+      proc.kill("SIGINT");
+      if (proc.stdin) {
+        proc.stdin.write("");
+      }
+    } catch {
+    }
+    setTimeout(() => {
+      try {
+        proc.kill("SIGTERM");
+      } catch {
+      }
+    }, 1500);
+    setTimeout(() => {
+      try {
+        proc.kill("SIGKILL");
+      } catch {
+      }
+      done();
+    }, 3e3);
   });
 }
 async function withPortAccess(_port, operation) {
@@ -298,10 +324,10 @@ except Exception as e:
   });
   ipcMain.handle(
     "hardware:flash",
-    async (event, { code, port, language, boardId }) => {
+    async (event, { code, port, language, boardId, deviceName, mode = "flash" }) => {
       await stopMonitorNative();
       return new Promise((resolve) => {
-        const tempFilePath = path.join(os.tmpdir(), "electro_temp.py");
+        const tempFilePath = path.join(os.tmpdir(), `electro_temp_${Date.now()}.py`);
         try {
           fs.writeFileSync(tempFilePath, code, "utf-8");
         } catch {
@@ -315,35 +341,59 @@ except Exception as e:
             "core",
             "uploader.py"
           );
-          execFile(
-            getPythonExe(),
-            [
-              scriptPath,
-              "--port",
-              port,
-              "--file",
-              tempFilePath,
-              "--language",
-              language,
-              "--board-id",
-              boardId ?? "arduino:avr:uno"
-            ],
-            { timeout: 6e4 },
-            (error, stdout, stderr) => {
-              if (error) {
-                resolve({
-                  success: false,
-                  message: stderr.trim() || stdout.trim() || error.message
-                });
-                return;
-              }
+          const args = [
+            scriptPath,
+            "--port",
+            port,
+            "--file",
+            tempFilePath,
+            "--language",
+            language,
+            "--board-id",
+            boardId ?? "arduino:avr:uno",
+            "--mode",
+            mode
+          ];
+          if (deviceName) {
+            args.push("--device-name", deviceName);
+          }
+          const flashProc = spawn(getPythonExe(), args);
+          currentFlashProcess = flashProc;
+          let fullOutput = "";
+          flashProc.stdout.on("data", (data) => {
+            const str = data.toString();
+            fullOutput += str;
+            win == null ? void 0 : win.webContents.send("terminal-output", str);
+          });
+          flashProc.stderr.on("data", (data) => {
+            const str = data.toString();
+            fullOutput += str;
+            win == null ? void 0 : win.webContents.send("terminal-output", str);
+          });
+          flashProc.on("close", (code2) => {
+            currentFlashProcess = null;
+            try {
+              fs.unlinkSync(tempFilePath);
+            } catch (e) {
+            }
+            if (code2 !== 0) {
+              const msg = fullOutput.trim() || "Process exited with error";
+              resolve({
+                success: false,
+                message: msg.includes("ERROR:") ? msg.split("ERROR:")[1].trim() : msg
+              });
+            } else {
               resolve({
                 success: true,
-                message: stdout.trim() || "Upload complete — device running"
+                message: "Success"
               });
             }
-          );
-        }, 1e3);
+          });
+          flashProc.on("error", (err) => {
+            currentFlashProcess = null;
+            resolve({ success: false, message: err.message });
+          });
+        }, 1500);
       });
     }
   );
@@ -512,6 +562,34 @@ except Exception as e:
           (error, stdout) => {
             if (error) {
               resolve({ success: false, message: "Failed to delete device file" });
+              return;
+            }
+            try {
+              const data = JSON.parse(stdout.trim());
+              resolve(data);
+            } catch (e) {
+              resolve({ success: false, message: "Invalid output from device" });
+            }
+          }
+        );
+      });
+    });
+  });
+  ipcMain.handle("hardware:renameFile", async (_event, { port, oldPath, newPath }) => {
+    return withPortAccess(port, () => {
+      return new Promise((resolve) => {
+        const scriptPath = path.join(
+          projectRoot,
+          "firmware-tools",
+          "core",
+          "fs_manager.py"
+        );
+        exec(
+          `"${getPythonExe()}" "${scriptPath}" --port ${port} --action rename --path "${oldPath}" --newpath "${newPath}"`,
+          { timeout: 3e4 },
+          (error, stdout) => {
+            if (error) {
+              resolve({ success: false, message: "Failed to rename device file" });
               return;
             }
             try {
