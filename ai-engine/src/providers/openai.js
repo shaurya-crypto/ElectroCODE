@@ -1,8 +1,8 @@
 const { buildSystemPrompt } = require("./systemPrompt");
 
-async function generate(config, userPrompt, context, mode) {
+async function generate(config, userPrompt, context, mode, activeFile, referencedFiles) {
   const modelVer = config.model || "gpt-4o";
-  const systemText = buildSystemPrompt(context, mode);
+  const systemText = buildSystemPrompt(context, mode, activeFile, referencedFiles);
 
   const response = await fetch("https://api.openai.com/v1/chat/completions", {
     method: "POST",

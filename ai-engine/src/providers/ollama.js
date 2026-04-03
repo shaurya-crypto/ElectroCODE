@@ -1,11 +1,11 @@
 const { buildSystemPrompt } = require("./systemPrompt");
 
-async function generate(config, userPrompt, context, mode) {
+async function generate(config, userPrompt, context, mode, activeFile, referencedFiles) {
   // Explicit fallback logic the user demanded for ollama defaults
   const baseURL = config.baseUrl || "http://localhost:11434";
   const modelVer = config.model || "llama3.1";
   
-  const systemText = buildSystemPrompt(context, mode);
+  const systemText = buildSystemPrompt(context, mode, activeFile, referencedFiles);
 
   const response = await fetch(baseURL + "/api/chat", {
     method: "POST",

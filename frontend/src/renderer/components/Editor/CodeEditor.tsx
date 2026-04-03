@@ -175,17 +175,37 @@ export default function CodeEditor() {
         height="100%"
         language={activeTab.language}
         value={aiSuggestion ? aiSuggestion.code : activeTab.content}
+        onMount={(editor) => {
+          editor.onDidChangeCursorPosition((e) => {
+             const model = editor.getModel();
+             if (!model) return;
+             sendMcpEvent('code_sync', {
+               filePath: activeTab.filePath || activeTab.name || 'untitled',
+               content: model.getValue(),
+               cursorLine: e.position.lineNumber,
+               cursorChar: e.position.column,
+               selectedText: editor.getModel()?.getValueInRange(editor.getSelection()!) || ''
+             });
+          });
+
+          editor.onDidChangeCursorSelection((e) => {
+            const model = editor.getModel();
+            if (!model) return;
+            const selection = e.selection;
+            sendMcpEvent('code_sync', {
+              filePath: activeTab.filePath || activeTab.name || 'untitled',
+              content: model.getValue(),
+              cursorLine: selection.positionLineNumber,
+              cursorChar: selection.positionColumn,
+              selectedText: model.getValueInRange(selection)
+            });
+          });
+        }}
         onChange={(val) => {
           const store = useAppStore.getState()
           if (!store.aiSuggestion) {
             updateContent(activeTab.id, val ?? '')
-            sendMcpEvent('code_sync', {
-              filePath: activeTab.filePath || activeTab.name || 'untitled',
-              content: val ?? '',
-              cursorLine: 0,
-              cursorChar: 0,
-              selectedText: ''
-            })
+            // Note: cursor/selection sync is handled by onMount listeners
           }
         }}
         theme={monacoTheme}

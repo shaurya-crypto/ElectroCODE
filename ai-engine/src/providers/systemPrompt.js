@@ -1,4 +1,4 @@
-function buildSystemPrompt(contextJSON, mode) {
+function buildSystemPrompt(contextJSON, mode, activeFile, referencedFiles = []) {
   let modeInstructions = "";
 
   if (mode === "debug") {
@@ -8,6 +8,16 @@ function buildSystemPrompt(contextJSON, mode) {
   } else {
     modeInstructions = `You are a pure Code Generator for embedded Py devices. Complete the code inside the smart buffer seamlessly.`;
   }
+
+  const activeFileContext = activeFile ? `
+### CURRENT_WORKING_FILE: ${activeFile.name}
+${activeFile.content}
+` : "";
+
+  const refContext = referencedFiles.length > 0 ? `
+### REFERENCED_CONTEXT:
+${referencedFiles.map(f => `FILE: ${f.name}\nCONTENT:\n${f.content}`).join("\n\n---\n\n")}
+` : "";
 
   return `${modeInstructions}
 
@@ -20,8 +30,12 @@ You MUST output raw parseable JSON perfectly matching this schema:
   "explanation": "A short message explaining what your code does."
 }
 
-IMPORTANT: Do NOT be lazy. If the user asks for code or a hardware feature, YOU MUST PUT THE FULL SCRIPT IN THE \`code\` FIELD.
-Here is the strict context from the user's IDE:
+IMPORTANT: Do NOT be lazy. If the user asks for code or a hardware feature, YOU MUST PUT THE FULL SCRIPT IN THE \`code\` FIELD. Give full code not incomplete codes.
+
+${activeFileContext}
+${refContext}
+
+Here is the strict telemetry and structured context from the user's IDE:
 ${JSON.stringify(contextJSON)}
 `;
 }

@@ -174,6 +174,9 @@ export default function AIPanel() {
     addAiMessage({ role: 'user', content: text })
     setAiLoading(true)
 
+    // Get workspace path to resolve disk files
+    const workspacePath = useAppStore.getState().openedFolderPath;
+
     try {
       // Hit the local MCP Server which holds full context of the code/device/serial automatically!
       const res = await fetch('http://localhost:4000/api/v1/ai/generate', {
@@ -183,7 +186,8 @@ export default function AIPanel() {
           prompt: text,
           intent: 'user_prompt',
           sessionId: currentSessionId,
-          apiConfig: apiConfig
+          apiConfig: apiConfig,
+          workspacePath: workspacePath
         }),
       })
 

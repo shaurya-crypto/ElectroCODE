@@ -21,26 +21,26 @@ function trimContextLen(contextJSON) {
   return contextJSON;
 }
 
-async function requestTargetLLM(config, userPrompt, context, mode) {
+async function requestTargetLLM(config, userPrompt, context, mode, activeFile, referencedFiles) {
   switch (config.provider.toLowerCase()) {
     case "anthropic":
-      return anthropicProvider.generate(config, userPrompt, context, mode);
+      return anthropicProvider.generate(config, userPrompt, context, mode, activeFile, referencedFiles);
     case "openai":
-      return openaiProvider.generate(config, userPrompt, context, mode);
+      return openaiProvider.generate(config, userPrompt, context, mode, activeFile, referencedFiles);
     case "groq":
-      return groqProvider.generate(config, userPrompt, context, mode);
+      return groqProvider.generate(config, userPrompt, context, mode, activeFile, referencedFiles);
     case "gemini":
-      return geminiProvider.generate(config, userPrompt, context, mode);
+      return geminiProvider.generate(config, userPrompt, context, mode, activeFile, referencedFiles);
     case "ollama":
     default:
-      return ollamaProvider.generate(config, userPrompt, context, mode);
+      return ollamaProvider.generate(config, userPrompt, context, mode, activeFile, referencedFiles);
   }
 }
 
 /**
  * Main exposed function for the MCP Server
  */
-async function generate({ userPrompt, context, mode, configOverride }) {
+async function generate({ userPrompt, context, mode, activeFile, referencedFiles, configOverride }) {
   // 1. Load config instantly off-disk
   const diskConfig = loadConfig();
   
@@ -64,7 +64,7 @@ async function generate({ userPrompt, context, mode, configOverride }) {
 
   try {
     const rawResult = await Promise.race([
-      requestTargetLLM(config, userPrompt, safeContext, mode),
+      requestTargetLLM(config, userPrompt, safeContext, mode, activeFile, referencedFiles),
       new Promise((_, reject) => setTimeout(() => reject(new Error("Timeout")), TIMEOUT_MS))
     ]);
 

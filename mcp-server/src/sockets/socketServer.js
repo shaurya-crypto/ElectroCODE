@@ -39,6 +39,14 @@ function initializeSockets(server) {
             store.setDeviceDetails(sessionId, data);
             break;
 
+          case "attach_file":
+            store.attachFile(sessionId, data.fileName, data.fileData);
+            break;
+
+          case "detach_file":
+            store.detachFile(sessionId, data.fileName);
+            break;
+
           default:
             logger.debug(`Unknown websocket event: ${type}`);
         }

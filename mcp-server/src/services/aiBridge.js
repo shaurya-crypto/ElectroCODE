@@ -5,7 +5,7 @@ const aiClient = require("../../../ai-engine/src/aiClient");
  * Handles LLM prompt mapping depending strictly on the `mode` schema
  */
 async function generate(payload) {
-  const { userPrompt, context, mode, apiConfig } = payload;
+  const { userPrompt, context, activeFile, referencedFiles, mode, apiConfig } = payload;
   logger.info(`Calling AI Engine using Mode: [${mode.toUpperCase()}]`);
 
   // Routes request into the modular AI Engine 
@@ -13,6 +13,8 @@ async function generate(payload) {
   const response = await aiClient.generate({ 
     userPrompt, 
     context, 
+    activeFile,
+    referencedFiles,
     mode, 
     configOverride: apiConfig 
   });

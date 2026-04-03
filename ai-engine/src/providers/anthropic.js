@@ -1,8 +1,8 @@
 const { buildSystemPrompt } = require("./systemPrompt");
 
-async function generate(config, userPrompt, context, mode) {
+async function generate(config, userPrompt, context, mode, activeFile, referencedFiles) {
   const modelVer = config.model || "claude-3-5-sonnet-20241022";
-  const systemText = buildSystemPrompt(context, mode);
+  const systemText = buildSystemPrompt(context, mode, activeFile, referencedFiles);
 
   // Pure generic fetch, preventing massive SDK installs for the user
   const response = await fetch("https://api.anthropic.com/v1/messages", {

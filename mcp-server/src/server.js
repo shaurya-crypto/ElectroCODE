@@ -40,5 +40,5 @@ const server = http.createServer(app);
 initializeSockets(server);
 
 server.listen(PORT, () => {
-  logger.info(`⚡ MCP Server listening on http://localhost:${PORT}`);
+  logger.info(`MCP Server listening on http://localhost:${PORT}`);
 });

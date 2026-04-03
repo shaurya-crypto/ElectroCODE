@@ -20,7 +20,9 @@ class ContextStore extends EventEmitter {
         active_file: null,
         code_buffer: "",
         cursor_position: { line: 0, column: 0 },
-        highlighted_code: ""
+        selection: { startLine: 0, startColumn: 0, endLine: 0, endColumn: 0 },
+        highlighted_code: "",
+        attached_files: new Map() // fileName -> { filePath, content }
       },
       telemetry: {
         logs: [], // Circular buffer style approach using array slicing
@@ -49,7 +51,22 @@ class ContextStore extends EventEmitter {
   setEditorState(sessionId, editorDetails) {
     const state = this._getSession(sessionId);
     if (!state) return;
-    state.editor = { ...state.editor, ...editorDetails };
+    
+    // Merge editor details, keeping attached_files Map separate
+    const { attached_files, ...rest } = editorDetails;
+    state.editor = { ...state.editor, ...rest };
+  }
+
+  attachFile(sessionId, fileName, fileData) {
+    const state = this._getSession(sessionId);
+    if (!state) return;
+    state.editor.attached_files.set(fileName, fileData);
+  }
+
+  detachFile(sessionId, fileName) {
+    const state = this._getSession(sessionId);
+    if (!state) return;
+    state.editor.attached_files.delete(fileName);
   }
 
   // --- Telemetry Mutations ---
@@ -84,7 +101,15 @@ class ContextStore extends EventEmitter {
   getSnapshot(sessionId) {
     const state = this._getSession(sessionId);
     if (!state) return null;
-    return JSON.parse(JSON.stringify(state)); // Safe copy
+    
+    // Deep clone but handle Map specifically
+    const serialized = JSON.parse(JSON.stringify(state, (key, value) => {
+      if (value instanceof Map) {
+        return Object.fromEntries(value);
+      }
+      return value;
+    }));
+    return serialized;
   }
 }
 

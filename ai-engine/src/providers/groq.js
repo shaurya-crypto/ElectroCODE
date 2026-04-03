@@ -1,8 +1,8 @@
 const { buildSystemPrompt } = require("./systemPrompt");
 
-async function generate(config, userPrompt, context, mode) {
+async function generate(config, userPrompt, context, mode, activeFile, referencedFiles) {
   const modelVer = config.model || "llama-3.1-8b-instant";
-  const systemText = buildSystemPrompt(context, mode);
+  const systemText = buildSystemPrompt(context, mode, activeFile, referencedFiles);
 
   const response = await fetch("https://api.groq.com/openai/v1/chat/completions", {
     method: "POST",

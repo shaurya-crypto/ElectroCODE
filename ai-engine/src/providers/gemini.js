@@ -1,8 +1,8 @@
 const { buildSystemPrompt } = require("./systemPrompt");
 
-async function generate(config, userPrompt, context, mode) {
+async function generate(config, userPrompt, context, mode, activeFile, referencedFiles) {
   const modelVer = config.model || "gemini-1.5-flash";
-  const systemText = buildSystemPrompt(context, mode);
+  const systemText = buildSystemPrompt(context, mode, activeFile, referencedFiles);
 
   const url = "https://generativelanguage.googleapis.com/v1beta/models/" + modelVer + ":generateContent?key=" + config.apiKey;
 

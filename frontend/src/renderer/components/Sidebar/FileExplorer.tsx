@@ -5,6 +5,7 @@ import {
 } from 'lucide-react'
 import { useAppStore, FileNode } from '../../store/useAppStore'
 import { FileIcon, getLanguageFromFilename } from '../../utils/Fileicon'
+import { sendMcpEvent } from '../../store/mcpClient'
 
 interface ContextMenuState {
   x: number
@@ -169,6 +170,26 @@ function ContextMenu({ state, onClose }: { state: ContextMenuState; onClose: () 
           showNotification('Path copied', 'success')
         }
       })
+
+      if (state.node.type === 'file') {
+        actions.push({
+          label: 'Attach to AI Chat',
+          action: async () => {
+            const node = state.node
+            if (!node || !node.filePath) return
+            try {
+              const content = await (window as any).electronAPI?.fsReadFile?.({ filePath: node.filePath })
+              sendMcpEvent('attach_file', {
+                fileName: node.name,
+                fileData: { filePath: node.filePath, content: content || '' }
+              })
+              showNotification(`Attached ${node.name} to AI context`, 'success')
+            } catch (err) {
+              showNotification('Failed to attach file', 'error')
+            }
+          }
+        })
+      }
     }
   } else {
     // ── ROOT/BACKGROUND CONTEXT MENU ──
@@ -217,7 +238,7 @@ interface TreeRowProps {
 
 function TreeRow({ node, depth, onContextMenu, isDevice }: TreeRowProps) {
   const {
-    activeTabId, openTab, toggleFolder,
+    openTab, toggleFolder,
     selectedFileId, setSelectedFileId,
     selectedPort, showNotification,
   } = useAppStore()
@@ -300,7 +321,7 @@ function TreeRow({ node, depth, onContextMenu, isDevice }: TreeRowProps) {
         className={`tree-row ${isSelected ? 'selected' : ''}`}
         style={{ paddingLeft: depth * 12 + 4, paddingRight: 8 }}
         onClick={handleClick}
-        onContextMenu={(e) => { e.preventDefault(); onContextMenu(e, node, isDevice) }}
+        onContextMenu={(e) => { e.preventDefault(); e.stopPropagation(); onContextMenu(e, node, isDevice) }}
       >
         {node.type === 'folder' ? (
           <span style={{ color: 'var(--text-muted)', display: 'flex', flexShrink: 0, width: 16 }}>

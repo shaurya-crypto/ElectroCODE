@@ -9,14 +9,16 @@ async function handleAiRequest(req, res) {
     const sessionId = req.body.sessionId;
     let explicitIntent = req.body.intent || "general_help";
     
-    if (!sessionId) {
-      return res.status(400).json({ error: "No sessionId provided by React client." });
-    }
-
     logger.info(`[AiRequestHandler] Incoming GenRequest for Session: ${sessionId}`);
 
     // Fetch unified bounds via prioritizing Validators
     const completeContextPayload = projectContext.composeContextPayload(sessionId);
+    const sessionSnapshot = store.getSnapshot(sessionId);
+    const workspacePath = req.body.workspacePath || "";
+
+    // 🔍 NEW: Resolve explicit mentions like @main.py or @config.json
+    const { resolveRefMentions } = require("../utils/contextResolver");
+    const referencedFiles = resolveRefMentions(userPrompt, sessionSnapshot, workspacePath);
 
     // Smart Auto-Detector for "Mode"
     let mode = "code"; 
@@ -45,6 +47,13 @@ async function handleAiRequest(req, res) {
     const result = await aiBridge.generate({
       userPrompt,
       context: completeContextPayload,
+      activeFile: {
+        name: sessionSnapshot.editor.active_file || "untitled",
+        content: sessionSnapshot.editor.code_buffer,
+        cursor: sessionSnapshot.editor.cursor_position,
+        selection: sessionSnapshot.editor.selection
+      },
+      referencedFiles,
       mode,
       apiConfig: req.body.apiConfig
     });
