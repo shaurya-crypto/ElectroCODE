@@ -1,5 +1,5 @@
 import { useState, useRef, useEffect } from 'react'
-import { Send, X, Trash2, Copy, Check, Bot } from 'lucide-react'
+import { Send, X, Trash2, Copy, Check, Bot, Plus, Terminal as TerminalIcon, FileText } from 'lucide-react'
 import { useAppStore, AIMessage } from '../../store/useAppStore'
 import { currentSessionId } from '../../store/mcpClient'
 import { PROVIDERS } from '../Settings/SettingsPanel'
@@ -101,7 +101,6 @@ function CodeBlock({ code, lang }: { code: string; lang: string }) {
 }
 
 function MessageBlock({ msg }: { msg: AIMessage }) {
-  // Parse code blocks
   const parts = msg.content.split(/(```[\w]*\n[\s\S]*?```)/g)
 
   return (
@@ -152,15 +151,57 @@ function TypingDots() {
 
 export default function AIPanel() {
   const {
-    aiMessages, addAiMessage, clearAiMessages,
+    conversations, currentConversationId, 
+    addAiMessage, clearAiMessages, newChat, switchChat,
     aiLoading, setAiLoading,
     toggleAiPanel, apiConfig, updateAPIConfig,
-    tabs, activeTabId, setAiSuggestion
+    tabs, activeTabId, setAiSuggestion,
+    getFlattenedFiles
   } = useAppStore()
 
+  // Derive current messages
+  const currentChat = conversations.find(c => c.id === currentConversationId)
+  const aiMessages = currentChat ? currentChat.messages : []
+
   const [input, setInput] = useState('')
+  const [suggestions, setSuggestions] = useState<string[]>([])
+  const [suggestionIdx, setSuggestionIdx] = useState(0)
+  const [showSuggestions, setShowSuggestions] = useState(false)
+
   const bottomRef = useRef<HTMLDivElement>(null)
   const textareaRef = useRef<HTMLTextAreaElement>(null)
+
+  // Logic to handle @ mentions 
+  useEffect(() => {
+    const lastWord = input.split(/\s/).pop() || ''
+    if (lastWord.startsWith('@')) {
+      const query = lastWord.slice(1).toLowerCase()
+      const files = getFlattenedFiles()
+      const filtered = [...files, 'terminal'].filter(f => f.toLowerCase().includes(query))
+      setSuggestions(filtered.slice(0, 8)) // Limit to 8
+      setSuggestionIdx(0)
+      setShowSuggestions(filtered.length > 0)
+    } else {
+      setShowSuggestions(false)
+    }
+  }, [input, getFlattenedFiles])
+
+  const insertSuggestion = (name: string) => {
+    const words = input.split(/\s/)
+    words.pop() // Remove the partial @mention
+    const newVal = words.join(' ') + (words.length > 0 ? ' ' : '') + '@' + name + ' '
+    setInput(newVal)
+    setShowSuggestions(false)
+    setTimeout(() => textareaRef.current?.focus(), 10)
+  }
+
+  const triggerPlusBtn = () => {
+    const files = getFlattenedFiles()
+    setSuggestions([...files.slice(0, 7), 'terminal'])
+    setSuggestionIdx(0)
+    setShowSuggestions(true)
+    textareaRef.current?.focus()
+  }
 
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: 'smooth' })
@@ -174,11 +215,9 @@ export default function AIPanel() {
     addAiMessage({ role: 'user', content: text })
     setAiLoading(true)
 
-    // Get workspace path to resolve disk files
     const workspacePath = useAppStore.getState().openedFolderPath;
 
     try {
-      // Hit the local MCP Server which holds full context of the code/device/serial automatically!
       const res = await fetch('http://localhost:4000/api/v1/ai/generate', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -192,13 +231,9 @@ export default function AIPanel() {
       })
 
       const json = await res.json()
-      
-      if (!json.success || !json.data) {
-        throw new Error(json.error || 'MCP generation failed')
-      }
+      if (!json.success || !json.data) throw new Error(json.error || 'MCP generation failed')
 
       const data = json.data;
-      
       if (data.type === 'code_update') {
         const reply = data.explanation || 'I have generated code. Review it in your editor.'
         addAiMessage({ role: 'assistant', content: reply })
@@ -217,18 +252,31 @@ export default function AIPanel() {
         const reply = data.payload || 'No payload in response'
         addAiMessage({ role: 'assistant', content: reply })
       }
-
     } catch {
-      addAiMessage({
-        role: 'assistant',
-        content: 'Error: Could not reach AI service. Check your API key in Tools > Settings.',
-      })
+      addAiMessage({ role: 'assistant', content: 'Error: Could not reach AI service. Check your API key in Tools > Settings.' })
     } finally {
       setAiLoading(false)
     }
   }
 
   function onKey(e: React.KeyboardEvent) {
+    if (showSuggestions) {
+      if (e.key === 'ArrowDown') {
+        e.preventDefault()
+        setSuggestionIdx(prev => (prev + 1) % suggestions.length)
+      } else if (e.key === 'ArrowUp') {
+        e.preventDefault()
+        setSuggestionIdx(prev => (prev - 1 + suggestions.length) % suggestions.length)
+      } else if (e.key === 'Enter' || e.key === 'Tab') {
+        e.preventDefault()
+        insertSuggestion(suggestions[suggestionIdx])
+      } else if (e.key === 'Escape') {
+        e.preventDefault()
+        setShowSuggestions(false)
+      }
+      return
+    }
+
     if (e.key === 'Enter' && !e.shiftKey) {
       e.preventDefault()
       send()
@@ -243,7 +291,12 @@ export default function AIPanel() {
     }}>
       {/* Header */}
       <div className="panel-header">
-        <span style={{ flex: 1 }}>AI Assistant</span>
+        <span style={{ flex: 1, fontSize: 13, fontWeight: 600 }}>Electro CODE AI</span>
+        
+        <button className="icon-btn" onClick={newChat} title="New Chat">
+          <Plus size={14} />
+        </button>
+
         {aiMessages.length > 0 && (
           <button className="icon-btn" onClick={clearAiMessages} title="Clear conversation">
             <Trash2 size={13} />
@@ -254,15 +307,43 @@ export default function AIPanel() {
         </button>
       </div>
 
+      {/* History Switcher (Mini) */}
+      {conversations.length > 1 && (
+        <div style={{ 
+          padding: '4px 8px', 
+          background: 'var(--bg-elevated)', 
+          borderBottom: '1px solid var(--border)',
+          display: 'flex', gap: 6, overflowX: 'auto',
+          scrollbarWidth: 'none'
+        }}>
+           {conversations.slice(0, 5).map(c => (
+             <button 
+               key={c.id}
+               onClick={() => switchChat(c.id)}
+               style={{
+                 padding: '3px 8px',
+                 fontSize: 10,
+                 borderRadius: 10,
+                 border: '1px solid var(--border)',
+                 background: c.id === currentConversationId ? 'var(--accent)' : 'transparent',
+                 color: c.id === currentConversationId ? '#000' : 'var(--text-dim)',
+                 whiteSpace: 'nowrap',
+                 cursor: 'pointer'
+               }}
+             >
+               {c.title.split(' ')[1] || 'Chat'}
+             </button>
+           ))}
+        </div>
+      )}
+
       {/* Messages */}
       <div style={{ flex: 1, overflowY: 'auto', overflowX: 'hidden' }}>
         {aiMessages.length === 0 && (
           <div style={{ padding: '16px 14px' }}>
             <p style={{ fontSize: 12, color: 'var(--text-muted)', marginBottom: 14, lineHeight: 1.6 }}>
               Describe what you want to build. The AI will generate code and wiring instructions for your selected device.
-              Code can be inserted directly into the editor.
             </p>
-
             <div style={{ fontSize: 11, color: 'var(--text-dim)', marginBottom: 8, textTransform: 'uppercase', letterSpacing: '0.07em', fontWeight: 600 }}>
               Suggestions
             </div>
@@ -272,25 +353,8 @@ export default function AIPanel() {
                   key={s}
                   onClick={() => send(s)}
                   style={{
-                    textAlign: 'left',
-                    padding: '6px 10px',
-                    background: 'none',
-                    border: 'none',
-                    borderLeft: '2px solid var(--border)',
-                    color: 'var(--text-muted)',
-                    fontSize: 12,
-                    cursor: 'pointer',
-                    transition: 'border-color 0.1s, color 0.1s',
-                  }}
-                  onMouseEnter={(e) => {
-                    const el = e.currentTarget as HTMLElement
-                    el.style.borderColor = 'var(--accent)'
-                    el.style.color = 'var(--text-primary)'
-                  }}
-                  onMouseLeave={(e) => {
-                    const el = e.currentTarget as HTMLElement
-                    el.style.borderColor = 'var(--border)'
-                    el.style.color = 'var(--text-muted)'
+                    textAlign: 'left', padding: '6px 10px', background: 'none', border: 'none',
+                    borderLeft: '2px solid var(--border)', color: 'var(--text-muted)', fontSize: 12, cursor: 'pointer',
                   }}
                 >
                   {s}
@@ -308,87 +372,64 @@ export default function AIPanel() {
         <div ref={bottomRef} />
       </div>
 
-      {/* Input */}
-      <div style={{
-        padding: '8px',
-        borderTop: '1px solid var(--border)',
-        background: 'var(--bg-elevated)',
-      }}>
-        <div style={{
-          border: '1px solid var(--border-light)',
-          background: 'var(--bg-input)',
-          display: 'flex',
-          alignItems: 'flex-end',
-          gap: 4,
-          padding: '5px 6px',
-        }}>
+      <div style={{ padding: '8px', borderTop: '1px solid var(--border)', background: 'var(--bg-elevated)', position: 'relative' }}>
+        {showSuggestions && (
+          <div style={{
+            position: 'absolute', bottom: '100%', left: 8, right: 8,
+            background: 'var(--bg-surface)', border: '1px solid var(--border)',
+            borderRadius: 'var(--radius)', boxShadow: '0 -4px 12px rgba(0,0,0,0.2)', zIndex: 100, overflow: 'hidden',
+          }}>
+            {suggestions.map((s, i) => (
+              <div
+                key={s} onClick={() => insertSuggestion(s)}
+                style={{
+                  padding: '8px 12px', display: 'flex', alignItems: 'center', gap: 8, fontSize: 12, cursor: 'pointer',
+                  background: i === suggestionIdx ? 'var(--accent-dim)' : 'transparent',
+                  color: i === suggestionIdx ? 'var(--accent)' : 'var(--text-primary)',
+                  borderLeft: i === suggestionIdx ? '2px solid var(--accent)' : '2px solid transparent',
+                }}
+              >
+                {s === 'terminal' ? <TerminalIcon size={13} /> : <FileText size={13} />}
+                {s}
+              </div>
+            ))}
+          </div>
+        )}
+
+        <div style={{ border: '1px solid var(--border-light)', background: 'var(--bg-input)', display: 'flex', alignItems: 'flex-end', gap: 4, padding: '5px 6px' }}>
+          <button onClick={triggerPlusBtn} style={{ width: 26, height: 26, border: 'none', background: 'none', color: 'var(--text-dim)', cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}>
+            <Plus size={16} />
+          </button>
           <textarea
-            ref={textareaRef}
-            value={input}
-            onChange={(e) => setInput(e.target.value)}
-            onKeyDown={onKey}
-            placeholder="Ask AI to write code..."
-            rows={1}
-            style={{
-              flex: 1,
-              background: 'none',
-              border: 'none',
-              outline: 'none',
-              resize: 'none',
-              color: 'var(--text-primary)',
-              fontFamily: 'var(--font-ui)',
-              fontSize: 13,
-              lineHeight: '18px',
-              maxHeight: 100,
-              overflowY: 'auto',
-            }}
+            ref={textareaRef} value={input} onChange={(e) => setInput(e.target.value)} onKeyDown={onKey}
+            placeholder="Ask AI to write code..." rows={1}
+            style={{ flex: 1, background: 'none', border: 'none', outline: 'none', resize: 'none', color: 'var(--text-primary)', fontFamily: 'var(--font-ui)', fontSize: 13, lineHeight: '18px', maxHeight: 100, overflowY: 'auto' }}
           />
           <button
-            onClick={() => send()}
-            disabled={!input.trim() || aiLoading}
+            onClick={() => send()} disabled={!input.trim() || aiLoading}
             style={{
-              width: 26, height: 26,
-              border: 'none',
+              width: 26, height: 26, border: 'none',
               background: input.trim() ? 'var(--accent)' : 'var(--bg-surface)',
               color: input.trim() ? 'white' : 'var(--text-dim)',
               cursor: input.trim() ? 'pointer' : 'default',
-              display: 'flex', alignItems: 'center', justifyContent: 'center',
-              flexShrink: 0,
-              borderRadius: 'var(--radius)',
+              display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0, borderRadius: 'var(--radius)',
             }}
           >
             <Send size={12} />
           </button>
         </div>
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginTop: 8 }}>
-          <p style={{ fontSize: 10, color: 'var(--text-dim)' }}>
-            Enter — send &nbsp;·&nbsp; Shift+Enter — new line
-          </p>
-
-          {/* Model Selector Footbar */}
+          <p style={{ fontSize: 10, color: 'var(--text-dim)' }}>Enter — send &nbsp;·&nbsp; Shift+Enter — new line</p>
           {apiConfig && (
             <div style={{ display: 'flex', alignItems: 'center', gap: 6, opacity: 0.8 }}>
               <Bot size={11} color="var(--text-muted)" />
               <select
                 value={apiConfig.model}
-                onChange={(e) => {
-                  updateAPIConfig({ ...apiConfig, model: e.target.value })
-                }}
-                style={{
-                  background: 'none',
-                  border: 'none',
-                  color: 'var(--text-muted)',
-                  fontSize: 10,
-                  outline: 'none',
-                  cursor: 'pointer',
-                  maxWidth: 120,
-                  textOverflow: 'ellipsis'
-                }}
+                onChange={(e) => updateAPIConfig({ ...apiConfig, model: e.target.value })}
+                style={{ background: 'none', border: 'none', color: 'var(--text-muted)', fontSize: 10, outline: 'none', cursor: 'pointer', maxWidth: 120, textOverflow: 'ellipsis' }}
               >
                 {PROVIDERS.find(p => p.id === apiConfig.provider)?.models.map(m => (
-                  <option key={m} value={m} style={{ background: 'var(--bg-elevated)', color: 'var(--text-primary)' }}>
-                    {m}
-                  </option>
+                  <option key={m} value={m} style={{ background: 'var(--bg-elevated)', color: 'var(--text-primary)' }}>{m}</option>
                 ))}
               </select>
             </div>

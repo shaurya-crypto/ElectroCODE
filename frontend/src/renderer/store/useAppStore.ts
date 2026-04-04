@@ -64,6 +64,13 @@ export interface AIMessage {
   timestamp: number;
 }
 
+export interface Conversation {
+  id: string;
+  title: string;
+  messages: AIMessage[];
+  timestamp: number;
+}
+
 export interface AISuggestion {
   code: string;
   language: string;
@@ -281,6 +288,10 @@ interface AppStore {
   setIsFlashing: (v: boolean) => void;
   isScanning: boolean;
   setScanning: (v: boolean) => void;
+  isDeviceBusy: boolean;
+  busyReason: string;
+  lockDevice: (reason: string) => boolean;
+  unlockDevice: () => void;
 
   // Tabs / Editor
   tabs: FileTab[];
@@ -306,9 +317,12 @@ interface AppStore {
   refreshLocalFolder: () => Promise<void>;
 
   // AI
-  aiMessages: AIMessage[];
+  conversations: Conversation[];
+  currentConversationId: string | null;
   addAiMessage: (msg: Omit<AIMessage, "id" | "timestamp">) => void;
   clearAiMessages: () => void;
+  newChat: () => void;
+  switchChat: (id: string) => void;
   aiLoading: boolean;
   setAiLoading: (v: boolean) => void;
   aiSuggestion: AISuggestion | null;
@@ -344,6 +358,8 @@ interface AppStore {
   promptConfig: { msg: string; defaultValue: string; resolve: (val: string | null) => void } | null;
   showPrompt: (msg: string, defaultValue?: string) => Promise<string | null>;
   resolvePrompt: (val: string | null) => void;
+
+  getFlattenedFiles: () => string[];
 }
 
 let untitledCount = 1;
@@ -411,9 +427,21 @@ export const useAppStore = create<AppStore>()(
         }
       },
       isScanning: false,
-      setScanning: (v) => set({ isScanning: v }),
-      isFlashing: false,
+      setScanning: (v: boolean) => set({ isScanning: v }),
+      isFlashing: false, // Legacy, use isDeviceBusy for logic check
       setIsFlashing: (v) => set({ isFlashing: v }),
+      isDeviceBusy: false,
+      busyReason: "",
+      lockDevice: (reason) => {
+        const { isDeviceBusy, busyReason, showNotification } = get();
+        if (isDeviceBusy) {
+          showNotification(`Device is busy: ${busyReason}`, "warning");
+          return false;
+        }
+        set({ isDeviceBusy: true, busyReason: reason });
+        return true;
+      },
+      unlockDevice: () => set({ isDeviceBusy: false, busyReason: "" }),
 
       // Tabs
       tabs: [],
@@ -467,15 +495,17 @@ export const useAppStore = create<AppStore>()(
           if (tab.source === 'device') {
             // Save to chip via serial
             const port = get().selectedPort;
-            if (port) {
-              try {
-                await win.electronAPI?.stopMonitor?.();
-                await win.electronAPI?.writeFile?.({ port, filePath: tab.filePath, content: tab.content });
-              } catch (e) {
-                console.error(e)
-              } finally {
-                await win.electronAPI?.startMonitor?.({ port, baudRate: 115200 });
-              }
+            if (!port) return;
+            if (!get().lockDevice(`Saving ${tab.name}`)) return;
+
+            try {
+              await win.electronAPI?.stopMonitor?.();
+              await win.electronAPI?.writeFile?.({ port, filePath: tab.filePath, content: tab.content });
+            } catch (e) {
+              console.error(e)
+            } finally {
+              get().unlockDevice();
+              await win.electronAPI?.startMonitor?.({ port, baudRate: 115200 });
             }
           } else {
             // Save to local PC
@@ -537,6 +567,8 @@ export const useAppStore = create<AppStore>()(
           set({ deviceFileTree: [] });
           return;
         }
+        if (!get().lockDevice("Reading device files")) return;
+
         try {
           // Stop monitor so we can safely access the port
           await (window as any).electronAPI.stopMonitor();
@@ -565,6 +597,7 @@ export const useAppStore = create<AppStore>()(
         } catch (e) {
           console.error("Failed to fetch device files", e);
         } finally {
+          get().unlockDevice();
           // Restart monitor
           await (window as any).electronAPI.startMonitor({ port, baudRate: 115200 });
         }
@@ -673,15 +706,55 @@ export const useAppStore = create<AppStore>()(
       },
 
       // AI
-      aiMessages: [],
-      addAiMessage: (msg) =>
+      conversations: [],
+      currentConversationId: null,
+      addAiMessage: (msg) => {
+        const { currentConversationId, conversations } = get();
+        let chatId = currentConversationId;
+        
+        // Auto-create if none
+        if (!chatId) {
+          chatId = `chat-${Date.now()}`;
+          const newConv: Conversation = { 
+            id: chatId, 
+            title: `Chat ${new Date().toLocaleTimeString()}`, 
+            messages: [], 
+            timestamp: Date.now() 
+          };
+          set({ conversations: [...conversations, newConv], currentConversationId: chatId });
+        }
+
         set((s) => ({
-          aiMessages: [
-            ...s.aiMessages,
-            { ...msg, id: `msg-${Date.now()}`, timestamp: Date.now() },
-          ],
-        })),
-      clearAiMessages: () => set({ aiMessages: [] }),
+          conversations: s.conversations.map((c) =>
+            c.id === chatId
+              ? { ...c, messages: [...c.messages, { ...msg, id: `msg-${Date.now()}`, timestamp: Date.now() }] }
+              : c
+          ),
+        }));
+      },
+      clearAiMessages: () => {
+        const { currentConversationId } = get();
+        if (!currentConversationId) return;
+        set((s) => ({
+          conversations: s.conversations.map((c) =>
+            c.id === currentConversationId ? { ...c, messages: [] } : c
+          ),
+        }));
+      },
+      newChat: () => {
+        const chatId = `chat-${Date.now()}`;
+        const newConv: Conversation = { 
+          id: chatId, 
+          title: `Chat ${new Date().toLocaleTimeString()}`, 
+          messages: [], 
+          timestamp: Date.now() 
+        };
+        set((s) => ({
+          conversations: [newConv, ...s.conversations],
+          currentConversationId: chatId
+        }));
+      },
+      switchChat: (id) => set({ currentConversationId: id }),
       aiLoading: false,
       setAiLoading: (v) => set({ aiLoading: v }),
       aiSuggestion: null,
@@ -782,6 +855,28 @@ export const useAppStore = create<AppStore>()(
           set({ promptConfig: null });
         }
       },
+      // Helpers
+      getFlattenedFiles: () => {
+        const { fileTree, tabs } = get();
+        const results: Set<string> = new Set();
+        
+        // Add open tabs
+        tabs.forEach(t => results.add(t.name));
+        
+        // Recursive tree walk
+        function walk(nodes: FileNode[]) {
+          for (const node of nodes) {
+            if (node.type === 'file') {
+              results.add(node.name);
+            } else if (node.children) {
+              walk(node.children);
+            }
+          }
+        }
+        walk(fileTree);
+        
+        return Array.from(results);
+      },
     }),
     {
       name: "electrocode-storage",
@@ -794,6 +889,11 @@ export const useAppStore = create<AppStore>()(
         aiPanelWidth: s.aiPanelWidth,
         terminalHeight: s.terminalHeight,
         terminalOpen: s.terminalOpen,
+        openedFolderPath: s.openedFolderPath,
+        selectedPort: s.selectedPort,
+        interpreter: s.interpreter,
+        conversations: s.conversations,
+        currentConversationId: s.currentConversationId,
       }),
     },
   ),

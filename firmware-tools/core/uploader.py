@@ -10,6 +10,8 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import time
+import serial
 
 # ─────────────────────────────────────────────
 #  Exit codes (so Electron can handle them cleanly)
@@ -22,6 +24,30 @@ EXIT_FILE_MISSING  = 4
 EXIT_TIMEOUT       = 5
 EXIT_TOOL_MISSING  = 6
 EXIT_UNKNOWN       = 9
+
+
+# ─────────────────────────────────────────────
+#  Hardware Helper: Wait for Port
+# ─────────────────────────────────────────────
+def wait_for_port(port: str, timeout: float = 3.0) -> bool:
+    """
+    Attempt to open the port multiple times. 
+    Returns True if port becomes available, False otherwise.
+    """
+    start_time = time.time()
+    while time.time() - start_time < timeout:
+        try:
+            # Try to open port to see if it's free
+            s = serial.Serial(port, 115200, timeout=1)
+            s.close()
+            return True
+        except (serial.SerialException, OSError) as e:
+            if "Access is denied" in str(e) or "PermissionError" in str(e):
+                time.sleep(0.3) # Wait and retry
+                continue
+            # If it's a "Device not found", it might be really gone
+            return False
+    return False
 
 
 # ─────────────────────────────────────────────
@@ -182,6 +208,10 @@ def _last_line(text: str) -> str:
 # ─────────────────────────────────────────────
 def upload_micropython(port: str, file_path: str, board_id: str,
                        device_name: str | None = None, mode: str = 'flash') -> None:
+
+    # ⏳ Robustness Check: Ensure the port is free, wait if not (Windows contention)
+    if not wait_for_port(port):
+        die(f"Could not open {port}. Device might be busy or in use by another session.", EXIT_PORT_BUSY)
 
     target_name = device_name or 'main.py'
     base = os.path.basename(file_path)

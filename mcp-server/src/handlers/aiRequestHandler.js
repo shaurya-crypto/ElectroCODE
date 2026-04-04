@@ -2,6 +2,7 @@ const projectContext = require("../context/projectContext");
 const aiBridge = require("../services/aiBridge");
 const suggestionHandler = require("./suggestionHandler");
 const logger = require("../utils/logger");
+const store = require("../store/contextStore");
 
 async function handleAiRequest(req, res) {
   try {

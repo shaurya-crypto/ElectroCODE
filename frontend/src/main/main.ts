@@ -1,12 +1,10 @@
 import { app, BrowserWindow, ipcMain, dialog } from "electron";
-import { createRequire } from "node:module";
 import { fileURLToPath } from "node:url";
 import path from "node:path";
 import { exec, spawn, execFile, ChildProcess } from "node:child_process";
 import fs from "node:fs"; // <-- ADD THIS
 import os from "node:os"; // <-- ADD THIS
 
-const require = createRequire(import.meta.url);
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
 // --- VITE & PATH SETUP (Do not touch) ---
@@ -20,8 +18,14 @@ process.env.VITE_PUBLIC = VITE_DEV_SERVER_URL
 
 let win: BrowserWindow | null;
 let monitorProcess: ChildProcess | null = null; // Keeps track of the live serial monitor
-let currentMonitorPort: string | null = null;
 let currentFlashProcess: ChildProcess | null = null;
+
+/**
+ * 🔒 HARDWARE MUTEX (The Queue)
+ * This ensures that NO TWO hardware operations hit the COM port at the same time.
+ * Even if the frontend sends 10 requests, they will wait in a single-file line.
+ */
+let hardwareMutex = Promise.resolve<any>(null);
 
 function getPythonExe(): string {
   // Check Thonny Python as fallback since Windows Appalias can cause 'python' command to fail
@@ -59,15 +63,18 @@ function createWindow() {
 // --- IPC LISTENERS (The Backend Logic) ---
 
 async function stopMonitorNative() : Promise<boolean> {
-  // If we are currently flashing/running a script, kill that too
+  // 1. Kill any active flash/upload process first
   if (currentFlashProcess) {
     try {
-      currentFlashProcess.stdin?.write("\x03"); // Send Ctrl+C to uploader
-      currentFlashProcess.kill();
+      // 💥 Triple-tap: Send two Ctrl+C (interrupts) and one Ctrl+D (soft reset)
+      // to ensure the device actually stops even if caught in a tight loop.
+      currentFlashProcess.stdin?.write("\x03\x03\x04"); 
+      currentFlashProcess.kill("SIGKILL");
     } catch(e) {}
     currentFlashProcess = null;
   }
 
+  // 2. Stop the monitor process
   return new Promise((resolve) => {
     if (!monitorProcess) return resolve(true);
 
@@ -75,7 +82,6 @@ async function stopMonitorNative() : Promise<boolean> {
     monitorProcess = null;
 
     let finished = false;
-
     const done = () => {
       if (!finished) {
         finished = true;
@@ -83,41 +89,83 @@ async function stopMonitorNative() : Promise<boolean> {
       }
     };
 
-    // When process actually stops
+    // Listen for completion
     proc.once("close", done);
     proc.once("exit", done);
     proc.once("error", done);
 
     try {
-      // 🟢 Graceful stop (best for serial / MicroPython)
-      proc.kill("SIGINT"); // like pressing Ctrl+C
+      // 🟢 Graceful stop (best for serial)
       if (proc.stdin) {
-        proc.stdin.write("\x03"); // Ctrl+C signal to device
+        proc.stdin.write("\x03\x03\x04"); // Interupts + Reset
       }
+      proc.kill("SIGINT");
     } catch { }
 
-    // ⏱ If not stopped, force kill
-    setTimeout(() => {
-      try {
-        proc.kill("SIGTERM");
-      } catch { }
-    }, 1500);
+    // ⏱ Force kill if it hangs
+    setTimeout(() => { 
+      if (!finished) {
+        try { proc.kill("SIGTERM"); } catch(e) {}
+      }
+    }, 500);
 
-    // ⏱ Final fallback
-    setTimeout(() => {
-      try {
-        proc.kill("SIGKILL");
-      } catch { }
-      done();
-    }, 3000);
+    setTimeout(() => { 
+      if (!finished) { 
+        try { proc.kill("SIGKILL"); } catch(e) {}
+        
+        // ⚔️ Windows Aggressive: Kill all residual python monitor handles if still stuck
+        if (process.platform === 'win32') {
+           exec('taskkill /F /IM python.exe /T', () => done());
+        } else {
+           done(); 
+        }
+      } 
+    }, 1500);
   });
 }
 
 // Helper: run a device operation with guaranteed port access
-// Does NOT auto-restart the monitor — callers must restart it explicitly if needed
-async function withPortAccess<T>(_port: string, operation: () => Promise<T>): Promise<T> {
-  await stopMonitorNative();
-  return await operation();
+async function withPortAccess<T>(port: string, operation: () => Promise<T>, retries = 3): Promise<T> {
+  // 🔗 Enter the Queue
+  const result = await (hardwareMutex = hardwareMutex.then(async () => {
+    console.log(`[ElectroAI] Queueing port access for ${port}...`);
+    
+    // 🛡️ CRITICAL SAFETY: If a flash or run is currently in progress, ABORT other hardware tasks.
+    if (currentFlashProcess) {
+      console.warn("[ElectroAI] Hardware is currently BUSY with a flash/run process. Aborting request.");
+      return { error: "Device is busy performing another action (Flash/Run). Please wait." } as any;
+    }
+
+    try {
+      await stopMonitorNative();
+      // ⏳ Windows Port Cooldown
+      await new Promise(r => setTimeout(r, 400)); // Slightly longer for safety
+      
+      const res = await operation();
+      
+      // If result indicates failure due to port, throw to trigger retry (handled outside mutex chain)
+      if (res && (res as any).error && typeof (res as any).error === 'string' && (res as any).error.toLowerCase().includes('access is denied')) {
+         throw new Error('port_busy');
+      }
+      
+      return res;
+    } catch (err: any) {
+      if (err.message === 'port_busy') throw err; // propagate to retry logic
+      return { error: err.message || "Unknown hardware error" } as any;
+    }
+  }).catch(async (err) => {
+     // If it was a 'port_busy' error, we handle it in the retry block below.
+     if (err && err.message === 'port_busy') return { _retry: true };
+     return { error: err ? err.message : "Lock error" };
+  }));
+
+  if (result && (result as any)._retry && retries > 0) {
+    console.warn(`[ElectroAI] Port ${port} busy, retrying in 1000ms...`);
+    await new Promise(r => setTimeout(r, 1000));
+    return withPortAccess(port, operation, retries - 1);
+  }
+
+  return result;
 }
 
 function setupIpcHandlers() {
@@ -158,7 +206,7 @@ function setupIpcHandlers() {
     return null;
   });
 
-  ipcMain.handle("fs:readDir", async (event, { dirPath }) => {
+  ipcMain.handle("fs:readDir", async (_event, { dirPath }) => {
     try {
       if (!fs.existsSync(dirPath)) return [];
       const stats = fs.statSync(dirPath);
@@ -189,7 +237,7 @@ function setupIpcHandlers() {
     }
   });
 
-  ipcMain.handle("fs:readFile", async (event, { filePath }) => {
+  ipcMain.handle("fs:readFile", async (_event, { filePath }) => {
     try {
       return fs.readFileSync(filePath, "utf-8");
     } catch (e) {
@@ -197,7 +245,7 @@ function setupIpcHandlers() {
     }
   });
 
-  ipcMain.handle("fs:createFile", async (event, { filePath, content = "" }) => {
+  ipcMain.handle("fs:createFile", async (_event, { filePath, content = "" }) => {
     try {
       fs.writeFileSync(filePath, content, "utf-8");
       return { success: true };
@@ -206,7 +254,7 @@ function setupIpcHandlers() {
     }
   });
 
-  ipcMain.handle("fs:createFolder", async (event, { folderPath }) => {
+  ipcMain.handle("fs:createFolder", async (_event, { folderPath }) => {
     try {
       fs.mkdirSync(folderPath, { recursive: true });
       return { success: true };
@@ -215,7 +263,7 @@ function setupIpcHandlers() {
     }
   });
 
-  ipcMain.handle("fs:delete", async (event, { filePath }) => {
+  ipcMain.handle("fs:delete", async (_event, { filePath }) => {
     try {
       fs.rmSync(filePath, { recursive: true, force: true });
       return { success: true };
@@ -224,7 +272,7 @@ function setupIpcHandlers() {
     }
   });
 
-  ipcMain.handle("fs:rename", async (event, { oldPath, newPath }) => {
+  ipcMain.handle("fs:rename", async (_event, { oldPath, newPath }) => {
     try {
       fs.renameSync(oldPath, newPath);
       return { success: true };
@@ -234,7 +282,7 @@ function setupIpcHandlers() {
   });
 
   // API Config / .env Sync
-  ipcMain.handle("saveApiSettings", async (event, config) => {
+  ipcMain.handle("saveApiSettings", async (_event, config) => {
     try {
       const LOCAL_APP_DATA = process.env.LOCALAPPDATA || path.join(os.homedir(), "AppData", "Local");
       const electroDir = path.join(LOCAL_APP_DATA, "ElectroAI");
@@ -284,31 +332,17 @@ function setupIpcHandlers() {
     });
   });
 
-  // Check chip is actually connected — just verify the port can be opened (works for ALL chip types)
+  // Check chip is actually connected
   ipcMain.handle("hardware:checkChip", async (_, { port }) => {
-    console.log(`[ElectroAI] Checking chip on ${port}...`);
-    return new Promise((resolve) => {
-      if (monitorProcess) {
-        monitorProcess.kill();
-        monitorProcess = null;
-      }
-
-      let resolved = false;
-      const done = (result: object) => {
-        if (!resolved) {
-          resolved = true;
-          console.log("[ElectroAI] checkChip result:", result);
-          resolve(result);
-        }
-      };
-
-      const ser = spawn(getPythonExe(), [
-        "-c",
-        `
+    return withPortAccess(port, () => {
+      return new Promise((resolve) => {
+        const ser = spawn(getPythonExe(), [
+          "-c",
+          `
 import serial, sys, time
 try:
-    s = serial.Serial('${port}', 115200, timeout=2)
-    time.sleep(0.3)
+    s = serial.Serial('${port}', 115200, timeout=1)
+    time.sleep(0.2)
     s.close()
     print('ok')
     sys.stdout.flush()
@@ -317,46 +351,28 @@ except Exception as e:
     sys.stderr.flush()
     sys.exit(1)
 `,
-      ]);
+        ]);
 
-      let out = "";
-      let errBuf = "";
-      ser.stdout.on("data", (d) => (out += d.toString()));
-      ser.stderr.on("data", (d) => (errBuf += d.toString()));
+        let out = "";
+        let errBuf = "";
+        ser.stdout.on("data", (d) => (out += d.toString()));
+        ser.stderr.on("data", (d) => (errBuf += d.toString()));
 
-      // If python is not found on PATH, spawn emits 'error' not 'close'
-      ser.on("error", (e) => {
-        console.error("[ElectroAI] spawn error:", e.message);
-        done({
-          connected: false,
-          message: `Python not found. Install Python and pyserial.`,
+        ser.on("error", (e) => {
+          resolve({ connected: false, message: `Python error: ${e.message}` });
         });
-      });
 
-      ser.on("close", (code) => {
-        console.log(
-          `[ElectroAI] checkChip python exited code=${code}, stdout="${out.trim()}", stderr="${errBuf.trim()}"`,
-        );
-        if (out.trim() === "ok") {
-          done({ connected: true });
-        } else {
-          const msg =
-            errBuf.trim() ||
-            `Could not open ${port}. Check USB cable, drivers, and close other serial tools (Thonny, Arduino IDE, PuTTY).`;
-          done({ connected: false, message: msg });
-        }
-      });
-
-      // Safety timeout — kill if Python hangs
-      const timer = setTimeout(() => {
-        ser.kill();
-        done({
-          connected: false,
-          message: `Timeout — no response from ${port}. Is the port correct?`,
+        ser.on("close", () => {
+          if (out.trim() === "ok") {
+            resolve({ connected: true });
+          } else {
+            const msg = errBuf.trim() || `Access Denied or Port Busy on ${port}.`;
+            resolve({ connected: false, message: msg });
+          }
         });
-      }, 8000);
 
-      ser.on("close", () => clearTimeout(timer));
+        setTimeout(() => { ser.kill(); resolve({ connected: false, message: "Timeout" }); }, 5000);
+      });
     });
   });
 
@@ -380,98 +396,100 @@ except Exception as e:
 
   ipcMain.handle(
     "hardware:flash",
-    async (event, { code, port, language, boardId, deviceName, mode = 'flash' }) => {
-      // Must cleanly stop monitor and send Ctrl+C to halt running scripts before flash!
-      await stopMonitorNative();
+    async (_event, { code, port, language, boardId, deviceName, mode = 'flash' }) => {
+      // 🔗 Enter the Queue
+      return hardwareMutex = hardwareMutex.then(async () => {
+        console.log(`[ElectroAI] Queueing Flash/Run for ${port}...`);
 
-      return new Promise((resolve) => {
-        const tempFilePath = path.join(os.tmpdir(), `electro_temp_${Date.now()}.py`);
-        try {
-          fs.writeFileSync(tempFilePath, code, "utf-8");
-        } catch {
-          resolve({ success: false, message: "Failed to write temp file" });
-          return;
-        }
+        // 1. Must cleanly stop monitor and send Ctrl+C to halt running scripts before flash!
+        await stopMonitorNative();
 
-        // Wait for Windows to release COM port lock
-        setTimeout(() => {
-          const scriptPath = path.join(
-            path.join(process.env.APP_ROOT!, ".."),
-            "firmware-tools",
-            "core",
-            "uploader.py",
-          );
-
-          const args = [
-            scriptPath,
-            "--port",
-            port,
-            "--file",
-            tempFilePath,
-            "--language",
-            language,
-            "--board-id",
-            boardId ?? "arduino:avr:uno",
-            "--mode",
-            mode
-          ];
-
-          if (deviceName) {
-            args.push("--device-name", deviceName);
+        return new Promise((resolve) => {
+          const tempFilePath = path.join(os.tmpdir(), `electro_temp_${Date.now()}.py`);
+          const cleanCode = code.replace(/\r\n/g, "\n");
+          try {
+            fs.writeFileSync(tempFilePath, cleanCode, "utf-8");
+          } catch {
+            return resolve({ success: false, message: "Failed to write temp file" });
           }
 
-          const flashProc = spawn(getPythonExe(), args);
-          currentFlashProcess = flashProc;
+          // Wait for Windows to release COM port lock
+          setTimeout(() => {
+            const scriptPath = path.join(
+              path.join(process.env.APP_ROOT!, ".."),
+              "firmware-tools",
+              "core",
+              "uploader.py",
+            );
 
-          let fullOutput = "";
-          let hasSentError = false;
+            const args = [
+              scriptPath,
+              "--port",
+              port,
+              "--file",
+              tempFilePath,
+              "--language",
+              language,
+              "--board-id",
+              boardId ?? "arduino:avr:uno",
+              "--mode",
+              mode
+            ];
 
-          flashProc.stdout.on("data", (data) => {
-            const str = data.toString();
-            fullOutput += str;
-            // Send live output to terminal
-            win?.webContents.send("terminal-output", str);
-          });
-
-          flashProc.stderr.on("data", (data) => {
-            const str = data.toString();
-            fullOutput += str;
-            win?.webContents.send("terminal-output", str);
-          });
-
-          flashProc.on("close", (code) => {
-            currentFlashProcess = null;
-            // Clean up temp file
-            try { fs.unlinkSync(tempFilePath); } catch(e) {}
-
-            if (code !== 0) {
-              const msg = fullOutput.trim() || "Process exited with error";
-              resolve({
-                success: false,
-                message: msg.includes("ERROR:") ? msg.split("ERROR:")[1].trim() : msg,
-              });
-            } else {
-              resolve({
-                success: true,
-                message: "Success",
-              });
+            if (deviceName) {
+              args.push("--device-name", deviceName);
             }
-          });
 
-          flashProc.on("error", (err) => {
-            currentFlashProcess = null;
-             resolve({ success: false, message: err.message });
-          });
+            const flashProc = spawn(getPythonExe(), args);
+            currentFlashProcess = flashProc;
 
-        }, 1500); 
+            let fullOutput = "";
+
+            flashProc.stdout.on("data", (data) => {
+              const str = data.toString();
+              fullOutput += str;
+              win?.webContents.send("terminal-output", str);
+            });
+
+            flashProc.stderr.on("data", (data) => {
+              const str = data.toString();
+              fullOutput += str;
+              win?.webContents.send("terminal-output", str);
+            });
+
+            flashProc.on("close", (code) => {
+              currentFlashProcess = null;
+              try { fs.unlinkSync(tempFilePath); } catch(e) {}
+
+              if (code !== 0) {
+                const msg = fullOutput.trim() || "Process exited with error";
+                resolve({ 
+                  success: false, 
+                  message: msg.includes("ERROR:") ? msg.split("ERROR:")[1].trim() : msg 
+                });
+              } else {
+                resolve({ success: true, message: "Success" });
+              }
+            });
+
+            flashProc.on("error", (err) => {
+              currentFlashProcess = null;
+              try { fs.unlinkSync(tempFilePath); } catch(e) {}
+              resolve({ success: false, message: err.message });
+            });
+
+          }, 400); // ⏱ Wait for OS cleanup
+        });
+      }).catch(err => {
+         return { success: false, message: err.message || "Queue Error" };
       });
-    },
+    }
   );
 
   // 4. Hardware - Start Live Serial Monitor
   ipcMain.handle(
     "hardware:startMonitor",
-    async (event, { port, baudRate = 115200 }) => {
+    async (_event, { port, baudRate = 115200 }) => {
       if (monitorProcess)
         return { success: false, message: "Monitor already running" };
 
@@ -490,7 +508,6 @@ except Exception as e:
         "--baud",
         baudRate.toString(),
       ]);
-      currentMonitorPort = port;
 
       // Listen to every print() statement from the Pico and send it to React
       monitorProcess.stdout?.on("data", (data) => {
@@ -594,8 +611,10 @@ except Exception as e:
             os.tmpdir(),
             "electro_write_temp_" + Date.now() + ".py",
           );
+          // Force LF newlines to avoid device blob with CRLF 
+          const cleanCode = content.replace(/\r\n/g, "\n");
           try {
-            fs.writeFileSync(tempFilePath, content, "utf-8");
+            fs.writeFileSync(tempFilePath, cleanCode, "utf-8");
           } catch (e) {
             resolve({ success: false, message: "Temp file error" });
             return;
@@ -621,7 +640,7 @@ except Exception as e:
               tempFilePath,
             ],
             { timeout: 30000 },
-            (error, stdout, stderr) => {
+            (error, _stdout, stderr) => {
               // clean up safely
               try {
                 fs.unlinkSync(tempFilePath);

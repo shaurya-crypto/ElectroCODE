@@ -3,6 +3,28 @@ import subprocess
 import sys
 import json
 import time
+import serial
+
+# ─────────────────────────────────────────────
+#  Hardware Helper: Wait for Port
+# ─────────────────────────────────────────────
+def wait_for_port(port: str, timeout: float = 3.0) -> bool:
+    """
+    Attempt to open the port multiple times. 
+    Returns True if port becomes available, False otherwise.
+    """
+    start_time = time.time()
+    while time.time() - start_time < timeout:
+        try:
+            s = serial.Serial(port, 115200, timeout=1)
+            s.close()
+            return True
+        except (serial.SerialException, OSError) as e:
+            if "Access is denied" in str(e) or "PermissionError" in str(e):
+                time.sleep(0.3)
+                continue
+            return False
+    return False
 
 def run_cmd(cmd, timeout=15):
     """Run a command and return stripped stdout. Exits on failure."""
@@ -40,6 +62,10 @@ def run_cmd(cmd, timeout=15):
 
 def list_files(port, target_path=""):
     """Runs code on the Pico to get its files formatted as JSON."""
+    if not wait_for_port(port):
+        print(json.dumps({"error": f"Could not open {port}. Device busy."}))
+        sys.exit(1)
+        
     mpy_code = f"""import os, json
 try:
     path = {repr(target_path)} if {repr(target_path)} else '.'
@@ -65,6 +91,10 @@ def strip_leading_slash(path):
 def read_file(port, filename):
     filename = filename.lstrip("/")
 
+    if not wait_for_port(port):
+        print(json.dumps({"error": f"Could not open {port}. Device busy."}))
+        sys.exit(1)
+
     cmd = [
         sys.executable, "-m", "mpremote",
         "connect", port,
@@ -76,9 +106,7 @@ def read_file(port, filename):
             result = subprocess.run(
                 cmd,
                 capture_output=True,
-                text=True,
-                encoding="utf-8",     # ✅ FIX
-                errors="ignore",      # ✅ VERY IMPORTANT
+                text=False,           # 🔥 Use binary mode
                 timeout=15
             )
             if result.returncode == 0:
@@ -86,25 +114,46 @@ def read_file(port, filename):
             time.sleep(1)
 
         if result.returncode != 0:
-            print(json.dumps({"error": result.stderr.strip() or "Failed to read file"}))
+            print(json.dumps({"error": result.stderr.decode("utf-8", "ignore").strip() or "Failed to read file"}))
             return
 
-        out = result.stdout or ""   # ✅ avoid None crash
-
-        # Clean "Connected to ..." line
-        lines = out.splitlines()
-        if lines and "Connected to" in lines[0]:
-            content = "\n".join(lines[1:])
-        else:
-            content = out
-
-        print(json.dumps({"content": content}))
+        raw_out = result.stdout or b""
+        
+        # 🟢 SURGICAL HEADER STRIP
+        # mpremote cat often prepends "Connected to..." and extra \r\n
+        # We search for the first line that is NOT "Connected to"
+        try:
+            out_str = raw_out.decode("utf-8", "replace")
+            lines = out_str.splitlines()
+            
+            # Find index where content actually starts
+            start_idx = 0
+            for i, line in enumerate(lines):
+                if "Connected to" in line:
+                    start_idx = i + 1
+                    break
+            
+            # Reconstruct content, forcing standard Unix newlines
+            content = "\n".join(lines[start_idx:])
+            
+            # 🛠️ FINAL SAFETY: If the original file had CRLF, splitlines() 
+            # handles it, but serial noise can lead to \r\r\n which splitlines 
+            # sees as \n\n. We normalize this by stripping any trailing \r
+            # from the joined lines if they exist.
+            
+            print(json.dumps({"content": content}))
+        except Exception as decode_err:
+             print(json.dumps({"error": f"Decode error: {str(decode_err)}"}))
 
     except Exception as e:
         print(json.dumps({"error": str(e)}))
 
 def delete_file(port, filename):
     """Uses mpremote 'rm' to delete a file."""
+    if not wait_for_port(port):
+        print(json.dumps({"error": f"Could not open {port}. Device busy."}))
+        sys.exit(1)
+        
     filename = strip_leading_slash(filename)
     cmd = [sys.executable, "-m", "mpremote", "connect", port, "rm", filename]
     run_cmd(cmd)
@@ -112,6 +161,10 @@ def delete_file(port, filename):
 
 def rename_file(port, old_path, new_path):
     """Uses mpremote 'fs mv' to rename a file or folder on the device."""
+    if not wait_for_port(port):
+        print(json.dumps({"error": f"Could not open {port}. Device busy."}))
+        sys.exit(1)
+        
     old_path = strip_leading_slash(old_path)
     new_path = strip_leading_slash(new_path)
     # mpremote fs mv :old :new
@@ -121,6 +174,10 @@ def rename_file(port, old_path, new_path):
 
 def write_file(port, device_path, local_path):
     """Uses mpremote 'fs cp' to copy a local file to the device."""
+    if not wait_for_port(port):
+        print(json.dumps({"error": f"Could not open {port}. Device busy."}))
+        sys.exit(1)
+        
     device_path = strip_leading_slash(device_path)
     cmd = [sys.executable, "-m", "mpremote", "connect", port, "fs", "cp", local_path, f":{device_path}"]
     run_cmd(cmd)

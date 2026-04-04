@@ -1,23 +1,5 @@
-import { useState } from "react";
-import { RefreshCw, Circle } from "lucide-react";
+import { RefreshCw, Circle, ChevronDownIcon } from "lucide-react";
 import { useAppStore } from "../../store/useAppStore";
-
-// Simulated port scan - TODO: replace with window.electronAPI.scanPorts()
-const MOCK_PORTS = [
-  { path: "COM3", manufacturer: "Raspberry Pi", description: "RP2040 USB CDC" },
-  {
-    path: "COM4",
-    manufacturer: "Silicon Labs",
-    description: "CP2102 USB to UART",
-  },
-  { path: "COM7", manufacturer: "FTDI", description: "USB Serial Port" },
-  { path: "/dev/ttyUSB0", manufacturer: "Silicon Labs", description: "CP2102" },
-  {
-    path: "/dev/ttyACM0",
-    manufacturer: "Arduino LLC",
-    description: "Arduino Uno",
-  },
-];
 
 export default function DevicePanel() {
   const {
@@ -68,28 +50,37 @@ export default function DevicePanel() {
       return;
     }
 
-    showNotification("Checking device...", "info");
-    const check = await (window as any).electronAPI?.checkChip?.({
-      port: selectedPort,
-    });
+    const store = useAppStore.getState();
+    if (!store.lockDevice("Checking connection")) return;
 
-    if (!check?.connected) {
-      showNotification(check?.message ?? "Chip not connected", "error");
-      addTerminalLine(activeTerminalId, `ERROR: ${check?.message}`);
-      return;
+    try {
+      const check = await (window as any).electronAPI.checkChip({
+        port: selectedPort,
+      });
+
+      if (!check?.connected) {
+        showNotification(check?.message ?? "Chip not connected", "error");
+        addTerminalLine(activeTerminalId, `ERROR: ${check?.message}`);
+        store.unlockDevice();
+        return;
+      }
+
+      setConnected(true);
+      addTerminalLine(
+        activeTerminalId,
+        `Connected to ${selectedPort} — ${interpreter.chip} (${interpreter.langDisplay})`,
+      );
+      showNotification(`Fetching device files...`, "info");
+      
+      // Fetch device files - this will also start the serial monitor afterwards
+      await store.fetchDeviceFiles();
+
+      showNotification(`Connected to ${selectedPort}`, "success");
+    } catch (e) {
+      console.error(e);
+    } finally {
+      store.unlockDevice();
     }
-
-    setConnected(true);
-    addTerminalLine(
-      activeTerminalId,
-      `Connected to ${selectedPort} — ${interpreter.chip} (${interpreter.langDisplay})`,
-    );
-    showNotification(`Fetching device files...`, "info");
-    
-    // Fetch device files - this will also start the serial monitor afterwards
-    await useAppStore.getState().fetchDeviceFiles();
-
-    showNotification(`Connected to ${selectedPort}`, "success");
   }
 
   const selectedPortInfo = availablePorts.find((p) => p.path === selectedPort);
@@ -310,25 +301,5 @@ export default function DevicePanel() {
         )}
       </div>
     </div>
-  );
-}
-
-function ChevronDownIcon() {
-  return (
-    <svg
-      width="12"
-      height="12"
-      viewBox="0 0 12 12"
-      fill="none"
-      style={{ flexShrink: 0, marginLeft: 6, color: "var(--text-dim)" }}
-    >
-      <path
-        d="M2 4l4 4 4-4"
-        stroke="currentColor"
-        strokeWidth="1.5"
-        strokeLinecap="round"
-        strokeLinejoin="round"
-      />
-    </svg>
   );
 }

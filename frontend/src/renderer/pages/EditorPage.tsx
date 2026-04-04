@@ -23,8 +23,9 @@ export default function EditorPage() {
     interpreterModalOpen, setInterpreterModalOpen,
     theme,
     notification, clearNotification,
-    newUntitledTab, saveTab, showNotification,
+    newUntitledTab, saveTab,
     promptConfig, resolvePrompt,
+    isDeviceBusy, busyReason
   } = useAppStore()
 
   // Internal Prompt State
@@ -66,16 +67,14 @@ export default function EditorPage() {
       }
       if (e.key === 'F5') { e.preventDefault()
         const store = useAppStore.getState()
-        if (store.isFlashing) {
-          store.showNotification('Upload already in progress...', 'warning')
-          return
-        }
+        if (!store.lockDevice(`Running ${activeTab?.name || 'Code'}`)) return;
+
         if (!store.isConnected || !store.selectedPort || !store.interpreter) {
+          store.unlockDevice()
           store.showNotification('Not connected to a device. Please select a port.', 'error')
           return
         }
         if (activeTab) {
-          store.setIsFlashing(true)
           store.addTerminalLine(store.activeTerminalId, `Running ${activeTab.name}...`)
           store.setTerminalOpen(true)
           
@@ -87,14 +86,16 @@ export default function EditorPage() {
             deviceName: activeTab.name,
             mode: 'run'
           } as any).then(response => {
-            store.setIsFlashing(false)
+            store.unlockDevice()
             if (!response.success) {
               store.addTerminalLine(store.activeTerminalId, `❌ Error: ${response.message}`)
             }
           }).catch(err => {
-            store.setIsFlashing(false)
+            store.unlockDevice()
             store.addTerminalLine(store.activeTerminalId, `❌ Error: ${err.message || String(err)}`)
           })
+        } else {
+          store.unlockDevice()
         }
       }
     }
@@ -299,6 +300,13 @@ export default function EditorPage() {
           <Circle size={7} fill={isConnected ? '#4ec9b0' : '#666'} stroke="none" />
           <span>{isConnected ? selectedPort ?? 'Connected' : 'Not Connected'}</span>
         </div>
+
+        {isDeviceBusy && (
+          <div className="statusbar-item" style={{ background: 'var(--yellow-dim)', color: 'var(--yellow)' }} title="Device Busy">
+            <AlertTriangle size={11} />
+            <span>BUSY: {busyReason}</span>
+          </div>
+        )}
 
         {interpreter && (
           <div className="statusbar-item" title="Language">

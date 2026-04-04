@@ -426,6 +426,9 @@ button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-
   font-family: var(--font-code);
   font-size: 13px;
   line-height: 18px;
+  white-space: pre-wrap;
+  word-break: break-all;
+  width: 100%;
 }
 .terminal-tab {
   display: flex;

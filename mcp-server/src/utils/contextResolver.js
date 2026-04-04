@@ -25,9 +25,15 @@ function resolveRefMentions(prompt, sessionState, workspacePath) {
     let resolvedContent = null;
     let resolvedPath = null;
 
+    // Special Case: @terminal
+    if (fileName.toLowerCase() === "terminal") {
+      const logs = sessionState.telemetry.logs || [];
+      resolvedContent = logs.length > 0 ? logs.join("\n") : "Terminal is empty.";
+      resolvedPath = "SERIAL_TERMINAL_LOGS";
+    }
     // 1. Check Attached Files in Store
-    const attached = sessionState.editor.attached_files;
-    if (attached && attached[fileName]) {
+    else if (sessionState.editor.attached_files && sessionState.editor.attached_files[fileName]) {
+      const attached = sessionState.editor.attached_files;
       resolvedContent = attached[fileName].content;
       resolvedPath = attached[fileName].filePath;
     } 
