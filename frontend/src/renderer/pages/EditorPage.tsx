@@ -65,38 +65,9 @@ export default function EditorPage() {
         if (e.key === 'a' && e.shiftKey) { e.preventDefault(); useAppStore.getState().toggleAiPanel() }
         if (e.key === ',') { e.preventDefault(); setSettingsOpen(true) }
       }
-      if (e.key === 'F5') { e.preventDefault()
-        const store = useAppStore.getState()
-        if (!store.lockDevice(`Running ${activeTab?.name || 'Code'}`)) return;
-
-        if (!store.isConnected || !store.selectedPort || !store.interpreter) {
-          store.unlockDevice()
-          store.showNotification('Not connected to a device. Please select a port.', 'error')
-          return
-        }
-        if (activeTab) {
-          store.addTerminalLine(store.activeTerminalId, `Running ${activeTab.name}...`)
-          store.setTerminalOpen(true)
-          
-          window.electronAPI.flash({
-            code: activeTab.content,
-            port: store.selectedPort,
-            language: store.interpreter.language,
-            boardId: store.interpreter.id,
-            deviceName: activeTab.name,
-            mode: 'run'
-          } as any).then(response => {
-            store.unlockDevice()
-            if (!response.success) {
-              store.addTerminalLine(store.activeTerminalId, `❌ Error: ${response.message}`)
-            }
-          }).catch(err => {
-            store.unlockDevice()
-            store.addTerminalLine(store.activeTerminalId, `❌ Error: ${err.message || String(err)}`)
-          })
-        } else {
-          store.unlockDevice()
-        }
+      if (e.key === 'F5') {
+        e.preventDefault()
+        useAppStore.getState().runExecution()
       }
     }
     window.addEventListener('keydown', onKey)
@@ -165,32 +136,6 @@ export default function EditorPage() {
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', width: '100vw', height: '100vh', overflow: 'hidden' }}>
-
-      {/* ── Title bar (draggable) ── */}
-      <div className="titlebar" style={{
-        height: 30, flexShrink: 0,
-        background: 'var(--titlebar-bg)',
-        borderBottom: '1px solid var(--border)',
-        display: 'flex', alignItems: 'center',
-        padding: '0 12px',
-        userSelect: 'none',
-      }}>
-        <div style={{ display: 'flex', alignItems: 'center', gap: 8, flex: 1 }}>
-          <div style={{
-            width: 16, height: 16,
-            background: 'var(--accent)',
-            display: 'flex', alignItems: 'center', justifyContent: 'center',
-            fontSize: 8, fontWeight: 800, color: 'white',
-          }}>
-            EC
-          </div>
-          <span style={{ fontSize: 12, color: 'var(--text-muted)' }}>
-            {activeTab
-              ? `${activeTab.name}${isDirty ? ' \u25cf' : ''} — Electro CODE`
-              : 'Electro CODE'}
-          </span>
-        </div>
-      </div>
 
       {/* ── Menu bar ── */}
       <MenuBar />

@@ -360,10 +360,23 @@ interface AppStore {
   resolvePrompt: (val: string | null) => void;
 
   getFlattenedFiles: () => string[];
+
+  // Execution
+  runExecution: () => Promise<void>;
+  stopExecution: () => Promise<void>;
+
+  // Save UI
+  savePromptOpen: boolean;
+  setSavePromptOpen: (v: boolean) => void;
+  handleSaveClick: () => void;
+  saveToLocal: () => Promise<void>;
+  saveToDevice: () => Promise<void>;
 }
 
 let untitledCount = 1;
 let terminalCount = 1;
+
+const _serialBuf: Record<string, string> = {}
 
 export const useAppStore = create<AppStore>()(
   persist(
@@ -462,7 +475,7 @@ export const useAppStore = create<AppStore>()(
         const tabs = get().tabs.filter((t) => t.id !== id);
         const active =
           get().activeTabId === id
-            ? (tabs.at(-1)?.id ?? null)
+            ? (tabs[tabs.length - 1]?.id ?? null)
             : get().activeTabId;
         set({ tabs, activeTabId: active });
       },
@@ -711,15 +724,15 @@ export const useAppStore = create<AppStore>()(
       addAiMessage: (msg) => {
         const { currentConversationId, conversations } = get();
         let chatId = currentConversationId;
-        
+
         // Auto-create if none
         if (!chatId) {
           chatId = `chat-${Date.now()}`;
-          const newConv: Conversation = { 
-            id: chatId, 
-            title: `Chat ${new Date().toLocaleTimeString()}`, 
-            messages: [], 
-            timestamp: Date.now() 
+          const newConv: Conversation = {
+            id: chatId,
+            title: `Chat ${new Date().toLocaleTimeString()}`,
+            messages: [],
+            timestamp: Date.now()
           };
           set({ conversations: [...conversations, newConv], currentConversationId: chatId });
         }
@@ -743,11 +756,11 @@ export const useAppStore = create<AppStore>()(
       },
       newChat: () => {
         const chatId = `chat-${Date.now()}`;
-        const newConv: Conversation = { 
-          id: chatId, 
-          title: `Chat ${new Date().toLocaleTimeString()}`, 
-          messages: [], 
-          timestamp: Date.now() 
+        const newConv: Conversation = {
+          id: chatId,
+          title: `Chat ${new Date().toLocaleTimeString()}`,
+          messages: [],
+          timestamp: Date.now()
         };
         set((s) => ({
           conversations: [newConv, ...s.conversations],
@@ -806,18 +819,24 @@ export const useAppStore = create<AppStore>()(
         } else {
           const active =
             get().activeTerminalId === id
-              ? terminals.at(-1)!.id
+              ? terminals[terminals.length - 1]!.id
               : get().activeTerminalId;
           set({ terminals, activeTerminalId: active });
         }
       },
       addTerminalLine: (id, text) => {
-        if (!text) return;
-        sendMcpEvent("telemetry_tick", { line: text });
-        const lines = text.split(/\r?\n/);
+        if (text === undefined || text === null) return;
+        _serialBuf[id] = (_serialBuf[id] ?? '') + text
+        const parts = _serialBuf[id].split(/\r?\n/)
+        _serialBuf[id] = parts.pop() ?? ''   // keep the incomplete tail
+
+        if (parts.length === 0) return        // nothing complete yet
+
+        parts.forEach(line => sendMcpEvent("telemetry_tick", { line }));
+
         set((s) => ({
           terminals: s.terminals.map((t) =>
-            t.id === id ? { ...t, lines: [...t.lines, ...lines] } : t,
+            t.id === id ? { ...t, lines: [...t.lines, ...parts] } : t,
           ),
         }));
       },
@@ -859,10 +878,10 @@ export const useAppStore = create<AppStore>()(
       getFlattenedFiles: () => {
         const { fileTree, tabs } = get();
         const results: Set<string> = new Set();
-        
+
         // Add open tabs
         tabs.forEach(t => results.add(t.name));
-        
+
         // Recursive tree walk
         function walk(nodes: FileNode[]) {
           for (const node of nodes) {
@@ -874,10 +893,166 @@ export const useAppStore = create<AppStore>()(
           }
         }
         walk(fileTree);
-        
+
         return Array.from(results);
       },
+
+      // Execution
+      runExecution: async () => {
+        const state = get();
+        const {
+          isConnected, activeTabId, tabs, selectedPort, interpreter,
+          activeTerminalId, isFlashing, showNotification,
+          addTerminalLine, clearTerminal, setTerminalOpen, setIsFlashing
+        } = state;
+
+        if (!isConnected || !selectedPort || !interpreter) {
+          showNotification('Not connected to a device. Please select a port.', 'error');
+          return;
+        }
+
+        const activeTab = tabs.find((t) => t.id === activeTabId);
+        if (!activeTab || isFlashing) return;
+
+        clearTerminal(activeTerminalId);
+        setTerminalOpen(true);
+        setIsFlashing(true);
+
+        addTerminalLine(activeTerminalId, `> Running ${activeTab.name}...`);
+        addTerminalLine(activeTerminalId, '');
+
+        try {
+          const response = await (window as any).electronAPI.flash({
+            code: activeTab.content,
+            port: selectedPort,
+            language: interpreter.language,
+            boardId: interpreter.id,
+            deviceName: activeTab.name,
+            mode: 'run'
+          });
+
+          if (response.success) {
+            // Monitor is started by the flash call itself via spawn/exec
+          } else {
+            if (response.message) {
+              addTerminalLine(activeTerminalId, `❌ Error: ${response.message}`);
+            }
+          }
+        } catch (err: any) {
+          addTerminalLine(activeTerminalId, `❌ Error: ${err.message || String(err)}`);
+        } finally {
+          setIsFlashing(false);
+          addTerminalLine(activeTerminalId, '');
+          addTerminalLine(activeTerminalId, '>>>');
+        }
+      },
+
+      stopExecution: async () => {
+        const state = get();
+        if (!state.isConnected || !state.selectedPort) return;
+        try {
+          if ((window as any).electronAPI?.stopExecution) {
+            await (window as any).electronAPI.stopExecution({ port: state.selectedPort });
+          }
+          state.addTerminalLine(state.activeTerminalId, '');
+          state.addTerminalLine(state.activeTerminalId, 'KeyboardInterrupt');
+          state.addTerminalLine(state.activeTerminalId, '>>>');
+          state.setIsFlashing(false);
+        } catch (e: any) {
+          console.error("Stop execution failed", e);
+        }
+      },
+
+      // Save UI
+      savePromptOpen: false,
+      setSavePromptOpen: (v) => set({ savePromptOpen: v }),
+
+      handleSaveClick: () => {
+        const state = get();
+        const activeTab = state.tabs.find(t => t.id === state.activeTabId);
+        if (!activeTab) return;
+
+        if (activeTab.source === 'device') {
+          state.saveToDevice();
+        } else if (activeTab.source === 'local' && activeTab.filePath && !activeTab.filePath.startsWith('/')) {
+          state.saveToLocal();
+        } else {
+          state.setSavePromptOpen(true);
+        }
+      },
+
+      saveToLocal: async () => {
+        const state = get();
+        state.setSavePromptOpen(false);
+        const activeTab = state.tabs.find(t => t.id === state.activeTabId);
+        if (!activeTab) return;
+
+        if (activeTab.filePath && activeTab.source !== 'device') {
+          try {
+            await (window as any).electronAPI.createFile({ filePath: activeTab.filePath, content: activeTab.content });
+            state.saveTab(activeTab.id);
+          } catch (e) { state.showNotification('Failed to save to local', 'error') }
+        } else {
+          const result = await (window as any).electronAPI.saveFile({ content: activeTab.content });
+          if (result?.success && result.filePath) {
+            const name = result.filePath.split(/[/\\]/).pop() || 'untitled';
+            state.updateTabMeta(activeTab.id, { name, filePath: result.filePath });
+            state.saveTab(activeTab.id);
+          }
+        }
+      },
+
+      saveToDevice: async () => {
+        const state = get();
+        state.setSavePromptOpen(false);
+        const activeTab = state.tabs.find(t => t.id === state.activeTabId);
+        if (!activeTab) return;
+
+        if (!state.isConnected || !state.selectedPort) {
+          state.showNotification('Not connected to a device.', 'error');
+          return;
+        }
+
+        const defaultName = activeTab.filePath?.startsWith('/') ? activeTab.filePath.replace('/', '') : activeTab.name;
+        // Fix: Use a prompt callback or simple prompt fallback. The store exposes showPrompt.
+        const name = await state.showPrompt(`Save to ${state.interpreter?.label} as:`, defaultName);
+        if (!name) return;
+
+        const devPath = name.startsWith('/') ? name : `/${name}`;
+
+        const fileExists = state.deviceFileTree?.[0]?.children?.some((f: any) => f.filePath === devPath || f.name === name.replace(/^\//, ''));
+        if (fileExists) {
+          state.addTerminalLine(state.activeTerminalId, `\x1b[33m⚠ Warning: File "${name}" already exists on device. Overwriting...\x1b[0m`);
+        }
+
+        state.addTerminalLine(state.activeTerminalId, `> Saving ${devPath} to device...`);
+        state.setTerminalOpen(true);
+
+        await (window as any).electronAPI.stopMonitor();
+
+        const response = await (window as any).electronAPI.writeFile({
+          port: state.selectedPort,
+          filePath: devPath,
+          content: activeTab.content
+        });
+
+        if (response.success) {
+          state.updateTabMeta(activeTab.id, {
+            name: name.split('/').pop() || name,
+            filePath: devPath,
+            source: 'device'
+          });
+          state.saveTab(activeTab.id);
+          state.fetchDeviceFiles();
+        } else {
+          state.showNotification(`Failed: ${response.message}`, 'error');
+        }
+
+        await (window as any).electronAPI.startMonitor({ port: state.selectedPort, baudRate: 115200 });
+      }
+
     }),
+
     {
       name: "electrocode-storage",
       partialize: (s) => ({

@@ -10,12 +10,14 @@ export default defineConfig({
     electron([
       {
         entry: 'src/main/main.ts',
+        vite: { build: { rollupOptions: { output: { format: 'cjs', entryFileNames: '[name].js' } } } }
       },
       {
         entry: 'src/main/preload.ts',
         onstart(options) {
           options.reload()
         },
+        vite: { build: { rollupOptions: { output: { format: 'cjs', entryFileNames: '[name].js' } } } }
       },
     ]),
     renderer(),

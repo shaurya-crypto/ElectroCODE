@@ -11,6 +11,17 @@
     "dist",
     "dist-electron"
   ],
+  "extraResources": [
+    {
+      "from": "../mcp-server",
+      "to": "mcp-server",
+      "filter": [
+        "src/**/*",
+        "package.json",
+        "node_modules/**/*"
+      ]
+    }
+  ],
   "mac": {
     "target": [
       "dmg"

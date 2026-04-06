@@ -1,7 +1,7 @@
 import { app, BrowserWindow, ipcMain, dialog } from "electron";
 import { fileURLToPath } from "node:url";
 import path from "node:path";
-import { exec, spawn, execFile, ChildProcess } from "node:child_process";
+import { exec, execSync, spawn, execFile, ChildProcess } from "node:child_process";
 import fs from "node:fs"; // <-- ADD THIS
 import os from "node:os"; // <-- ADD THIS
 
@@ -18,14 +18,7 @@ process.env.VITE_PUBLIC = VITE_DEV_SERVER_URL
 
 let win: BrowserWindow | null;
 let monitorProcess: ChildProcess | null = null; // Keeps track of the live serial monitor
-let currentFlashProcess: ChildProcess | null = null;
-
-/**
- * 🔒 HARDWARE MUTEX (The Queue)
- * This ensures that NO TWO hardware operations hit the COM port at the same time.
- * Even if the frontend sends 10 requests, they will wait in a single-file line.
- */
-let hardwareMutex = Promise.resolve<any>(null);
+let mcpProcess: ChildProcess | null = null; // MCP Server process
 
 function getPythonExe(): string {
   // Check Thonny Python as fallback since Windows Appalias can cause 'python' command to fail
@@ -40,9 +33,12 @@ function createWindow() {
   win = new BrowserWindow({
     width: 1200,
     height: 800,
+    minWidth: 900,
+    minHeight: 600,
+    frame: false, // Frameless window
     icon: path.join(process.env.VITE_PUBLIC, "electron-vite.svg"),
     webPreferences: {
-      preload: path.join(__dirname, "preload.mjs"), // Vite compiles preload.ts to .mjs
+      preload: path.join(__dirname, "preload.js"), // Vite plugin-electron compiles preload.ts to .js
       contextIsolation: true, // Security requirement
       nodeIntegration: false,
     },
@@ -62,19 +58,7 @@ function createWindow() {
 
 // --- IPC LISTENERS (The Backend Logic) ---
 
-async function stopMonitorNative() : Promise<boolean> {
-  // 1. Kill any active flash/upload process first
-  if (currentFlashProcess) {
-    try {
-      // 💥 Triple-tap: Send two Ctrl+C (interrupts) and one Ctrl+D (soft reset)
-      // to ensure the device actually stops even if caught in a tight loop.
-      currentFlashProcess.stdin?.write("\x03\x03\x04"); 
-      currentFlashProcess.kill("SIGKILL");
-    } catch(e) {}
-    currentFlashProcess = null;
-  }
-
-  // 2. Stop the monitor process
+async function stopMonitorNative(): Promise<boolean> {
   return new Promise((resolve) => {
     if (!monitorProcess) return resolve(true);
 
@@ -82,90 +66,52 @@ async function stopMonitorNative() : Promise<boolean> {
     monitorProcess = null;
 
     let finished = false;
+
     const done = () => {
       if (!finished) {
         finished = true;
-        resolve(true);
+        // Give Windows a moment to fully release the COM port handle
+        setTimeout(() => resolve(true), 500);
       }
     };
 
-    // Listen for completion
+    // When process actually stops
     proc.once("close", done);
     proc.once("exit", done);
     proc.once("error", done);
 
-    try {
-      // 🟢 Graceful stop (best for serial)
-      if (proc.stdin) {
-        proc.stdin.write("\x03\x03\x04"); // Interupts + Reset
-      }
-      proc.kill("SIGINT");
-    } catch { }
+    if (process.platform === "win32" && proc.pid) {
+      // 🔴 Windows: MUST use taskkill /T /F IMMEDIATELY to kill the entire
+      // process tree. SIGINT only kills the parent python.exe but leaves
+      // child processes (mpremote, etc.) alive, holding the COM port locked.
+      try {
+        execSync(`taskkill /pid ${proc.pid} /T /F`, { stdio: "ignore" });
+      } catch { }
+      // taskkill is synchronous, give a moment for close event
+      setTimeout(done, 1000);
+    } else {
+      // Unix: graceful SIGINT, then escalate
+      try {
+        proc.kill("SIGINT");
+      } catch { }
 
-    // ⏱ Force kill if it hangs
-    setTimeout(() => { 
-      if (!finished) {
-        try { proc.kill("SIGTERM"); } catch(e) {}
-      }
-    }, 500);
+      setTimeout(() => {
+        try { proc.kill("SIGTERM"); } catch { }
+      }, 1500);
 
-    setTimeout(() => { 
-      if (!finished) { 
-        try { proc.kill("SIGKILL"); } catch(e) {}
-        
-        // ⚔️ Windows Aggressive: Kill all residual python monitor handles if still stuck
-        if (process.platform === 'win32') {
-           exec('taskkill /F /IM python.exe /T', () => done());
-        } else {
-           done(); 
-        }
-      } 
-    }, 1500);
+      setTimeout(() => {
+        try { proc.kill("SIGKILL"); } catch { }
+        done();
+      }, 3000);
+    }
   });
 }
 
 // Helper: run a device operation with guaranteed port access
-async function withPortAccess<T>(port: string, operation: () => Promise<T>, retries = 3): Promise<T> {
-  // 🔗 Enter the Queue
-  const result = await (hardwareMutex = hardwareMutex.then(async () => {
-    console.log(`[ElectroAI] Queueing port access for ${port}...`);
-    
-    // 🛡️ CRITICAL SAFETY: If a flash or run is currently in progress, ABORT other hardware tasks.
-    if (currentFlashProcess) {
-      console.warn("[ElectroAI] Hardware is currently BUSY with a flash/run process. Aborting request.");
-      return { error: "Device is busy performing another action (Flash/Run). Please wait." } as any;
-    }
-
-    try {
-      await stopMonitorNative();
-      // ⏳ Windows Port Cooldown
-      await new Promise(r => setTimeout(r, 400)); // Slightly longer for safety
-      
-      const res = await operation();
-      
-      // If result indicates failure due to port, throw to trigger retry (handled outside mutex chain)
-      if (res && (res as any).error && typeof (res as any).error === 'string' && (res as any).error.toLowerCase().includes('access is denied')) {
-         throw new Error('port_busy');
-      }
-      
-      return res;
-    } catch (err: any) {
-      if (err.message === 'port_busy') throw err; // propagate to retry logic
-      return { error: err.message || "Unknown hardware error" } as any;
-    }
-  }).catch(async (err) => {
-     // If it was a 'port_busy' error, we handle it in the retry block below.
-     if (err && err.message === 'port_busy') return { _retry: true };
-     return { error: err ? err.message : "Lock error" };
-  }));
-
-  if (result && (result as any)._retry && retries > 0) {
-    console.warn(`[ElectroAI] Port ${port} busy, retrying in 1000ms...`);
-    await new Promise(r => setTimeout(r, 1000));
-    return withPortAccess(port, operation, retries - 1);
-  }
-
-  return result;
+// Does NOT auto-restart the monitor — callers must restart it explicitly if needed
+async function withPortAccess<T>(_port: string, operation: () => Promise<T>): Promise<T> {
+  await stopMonitorNative();
+  return await operation();
 }
 
 function setupIpcHandlers() {
@@ -206,7 +152,7 @@ function setupIpcHandlers() {
     return null;
   });
 
-  ipcMain.handle("fs:readDir", async (_event, { dirPath }) => {
+  ipcMain.handle("fs:readDir", async (_, { dirPath }) => {
     try {
       if (!fs.existsSync(dirPath)) return [];
       const stats = fs.statSync(dirPath);
@@ -237,7 +183,7 @@ function setupIpcHandlers() {
     }
   });
 
-  ipcMain.handle("fs:readFile", async (_event, { filePath }) => {
+  ipcMain.handle("fs:readFile", async (_, { filePath }) => {
     try {
       return fs.readFileSync(filePath, "utf-8");
     } catch (e) {
@@ -245,7 +191,7 @@ function setupIpcHandlers() {
     }
   });
 
-  ipcMain.handle("fs:createFile", async (_event, { filePath, content = "" }) => {
+  ipcMain.handle("fs:createFile", async (_, { filePath, content = "" }) => {
     try {
       fs.writeFileSync(filePath, content, "utf-8");
       return { success: true };
@@ -254,7 +200,7 @@ function setupIpcHandlers() {
     }
   });
 
-  ipcMain.handle("fs:createFolder", async (_event, { folderPath }) => {
+  ipcMain.handle("fs:createFolder", async (_, { folderPath }) => {
     try {
       fs.mkdirSync(folderPath, { recursive: true });
       return { success: true };
@@ -263,7 +209,7 @@ function setupIpcHandlers() {
     }
   });
 
-  ipcMain.handle("fs:delete", async (_event, { filePath }) => {
+  ipcMain.handle("fs:delete", async (_, { filePath }) => {
     try {
       fs.rmSync(filePath, { recursive: true, force: true });
       return { success: true };
@@ -272,7 +218,7 @@ function setupIpcHandlers() {
     }
   });
 
-  ipcMain.handle("fs:rename", async (_event, { oldPath, newPath }) => {
+  ipcMain.handle("fs:rename", async (_, { oldPath, newPath }) => {
     try {
       fs.renameSync(oldPath, newPath);
       return { success: true };
@@ -282,7 +228,7 @@ function setupIpcHandlers() {
   });
 
   // API Config / .env Sync
-  ipcMain.handle("saveApiSettings", async (_event, config) => {
+  ipcMain.handle("saveApiSettings", async (_, config) => {
     try {
       const LOCAL_APP_DATA = process.env.LOCALAPPDATA || path.join(os.homedir(), "AppData", "Local");
       const electroDir = path.join(LOCAL_APP_DATA, "ElectroAI");
@@ -305,20 +251,16 @@ function setupIpcHandlers() {
   // Scan real ports
   ipcMain.handle("hardware:listPorts", async () => {
     return new Promise((resolve) => {
-      console.log("[ElectroAI] Scanning serial ports...");
       exec(
         `"${getPythonExe()}" -c "import json,serial.tools.list_ports;print(json.dumps([{'path':p.device,'description':p.description or '','manufacturer':p.manufacturer or ''} for p in serial.tools.list_ports.comports()]))"`,
         { timeout: 10000 },
-        (err, stdout, stderr) => {
+        (err, stdout) => {
           if (err) {
-            console.error("[ElectroAI] Port scan failed:", err.message);
-            if (stderr) console.error("[ElectroAI] stderr:", stderr);
             resolve([]);
             return;
           }
           try {
             const ports = JSON.parse(stdout.trim());
-            console.log("[ElectroAI] Found ports:", ports);
             resolve(ports);
           } catch {
             console.error(
@@ -332,17 +274,29 @@ function setupIpcHandlers() {
     });
   });
 
-  // Check chip is actually connected
+  // Check chip is actually connected — just verify the port can be opened (works for ALL chip types)
   ipcMain.handle("hardware:checkChip", async (_, { port }) => {
-    return withPortAccess(port, () => {
-      return new Promise((resolve) => {
-        const ser = spawn(getPythonExe(), [
-          "-c",
-          `
+    // Use stopMonitorNative() to kill the ENTIRE process tree on Windows.
+    // A direct .kill() only kills the parent python.exe, leaving child
+    // processes (mpremote, etc.) alive and holding the COM port locked.
+    await stopMonitorNative();
+
+    return new Promise((resolve) => {
+      let resolved = false;
+      const done = (result: object) => {
+        if (!resolved) {
+          resolved = true;
+          resolve(result);
+        }
+      };
+
+      const ser = spawn(getPythonExe(), [
+        "-c",
+        `
 import serial, sys, time
 try:
-    s = serial.Serial('${port}', 115200, timeout=1)
-    time.sleep(0.2)
+    s = serial.Serial('${port}', 115200, timeout=2)
+    time.sleep(0.3)
     s.close()
     print('ok')
     sys.stdout.flush()
@@ -351,28 +305,45 @@ except Exception as e:
     sys.stderr.flush()
     sys.exit(1)
 `,
-        ]);
+      ]);
 
-        let out = "";
-        let errBuf = "";
-        ser.stdout.on("data", (d) => (out += d.toString()));
-        ser.stderr.on("data", (d) => (errBuf += d.toString()));
+      let out = "";
+      let errBuf = "";
+      ser.stdout.on("data", (d) => (out += d.toString()));
+      ser.stderr.on("data", (d) => (errBuf += d.toString()));
 
-        ser.on("error", (e) => {
-          resolve({ connected: false, message: `Python error: ${e.message}` });
+      // If python is not found on PATH, spawn emits 'error' not 'close'
+      ser.on("error", (e) => {
+        console.error("[ElectroAI] spawn error:", e.message);
+        done({
+          connected: false,
+          message: `Python not found. Install Python and pyserial.`,
         });
-
-        ser.on("close", () => {
-          if (out.trim() === "ok") {
-            resolve({ connected: true });
-          } else {
-            const msg = errBuf.trim() || `Access Denied or Port Busy on ${port}.`;
-            resolve({ connected: false, message: msg });
-          }
-        });
-
-        setTimeout(() => { ser.kill(); resolve({ connected: false, message: "Timeout" }); }, 5000);
       });
+
+      ser.on("close", (code) => {
+        console.log(
+          `[ElectroAI] checkChip python exited code=${code}, stdout="${out.trim()}", stderr="${errBuf.trim()}"`,
+        );
+        if (out.trim() === "ok") {
+          done({ connected: true });
+        } else {
+          const msg =
+            errBuf.trim() ||
+            `Could not open ${port}. Check USB cable, drivers, and close other serial tools.`;
+          done({ connected: false, message: msg });
+        }
+      });
+
+      const timer = setTimeout(() => {
+        ser.kill();
+        done({
+          connected: false,
+          message: `Timeout — no response from ${port}.`,
+        });
+      }, 8000);
+
+      ser.on("close", () => clearTimeout(timer));
     });
   });
 
@@ -396,100 +367,121 @@ except Exception as e:
 
   ipcMain.handle(
     "hardware:flash",
-    async (_event, { code, port, language, boardId, deviceName, mode = 'flash' }) => {
-      // 🔗 Enter the Queue
-      return hardwareMutex = hardwareMutex.then(async () => {
-        console.log(`[ElectroAI] Queueing Flash/Run for ${port}...`);
+    async (_, { code, port, language, boardId, deviceName, mode }) => {
+      // Must cleanly stop monitor and send Ctrl+C to halt running scripts before flash/run!
+      await stopMonitorNative();
 
-        // 1. Must cleanly stop monitor and send Ctrl+C to halt running scripts before flash!
-        await stopMonitorNative();
+      return new Promise((resolve) => {
+        const tempFilePath = path.join(os.tmpdir(), "electro_temp.py");
+        try {
+          fs.writeFileSync(tempFilePath, code, "utf-8");
+        } catch {
+          resolve({ success: false, message: "Failed to write temp file" });
+          return;
+        }
 
-        return new Promise((resolve) => {
-          const tempFilePath = path.join(os.tmpdir(), `electro_temp_${Date.now()}.py`);
-          const cleanCode = code.replace(/\r\n/g, "\n");
-          try {
-            fs.writeFileSync(tempFilePath, cleanCode, "utf-8");
-          } catch {
-            return resolve({ success: false, message: "Failed to write temp file" });
+        // Wait for Windows to release COM port lock (stopMonitor already waited, wait an extra 1000ms)
+        setTimeout(() => {
+          const uploaderPath = path.join(
+            path.join(process.env.APP_ROOT!, ".."),
+            "firmware-tools",
+            "core",
+            "uploader.py",
+          );
+
+          const args = [
+            uploaderPath,
+            "--port",
+            port,
+            "--file",
+            tempFilePath,
+            "--language",
+            language,
+            "--board-id",
+            boardId ?? "arduino:avr:uno",
+          ];
+
+          if (deviceName) {
+            args.push("--device-name", deviceName);
+          }
+          if (mode) {
+            args.push("--mode", mode);
           }
 
-          // Wait for Windows to release COM port lock
-          setTimeout(() => {
-            const scriptPath = path.join(
-              path.join(process.env.APP_ROOT!, ".."),
-              "firmware-tools",
-              "core",
-              "uploader.py",
-            );
+          if (mode === "run") {
+            // Live stream execution - acts as the active monitor
+            const runProcess = spawn(getPythonExe(), args);
+            monitorProcess = runProcess;
 
-            const args = [
-              scriptPath,
-              "--port",
-              port,
-              "--file",
-              tempFilePath,
-              "--language",
-              language,
-              "--board-id",
-              boardId ?? "arduino:avr:uno",
-              "--mode",
-              mode
-            ];
-
-            if (deviceName) {
-              args.push("--device-name", deviceName);
-            }
-
-            const flashProc = spawn(getPythonExe(), args);
-            currentFlashProcess = flashProc;
-
-            let fullOutput = "";
-
-            flashProc.stdout.on("data", (data) => {
-              const str = data.toString();
-              fullOutput += str;
-              win?.webContents.send("terminal-output", str);
+            runProcess.stdout?.on("data", (data) => {
+              if (win) win.webContents.send("terminal-output", data.toString("utf8"))
+            });
+            runProcess.stderr?.on("data", (data) => {
+              if (win) win.webContents.send("terminal-output", data.toString("utf8"))
+            });
+            runProcess.on("close", () => {
+              if (monitorProcess === runProcess) monitorProcess = null;
             });
 
-            flashProc.stderr.on("data", (data) => {
-              const str = data.toString();
-              fullOutput += str;
-              win?.webContents.send("terminal-output", str);
-            });
+            // Resolve immediately so the UI knows it started
+            resolve({ success: true, message: "Streaming live execution" });
+          } else {
+            // Flash mode: wait for completion, then start monitor automatically
+            execFile(
+              getPythonExe(),
+              args,
+              { timeout: 60000 },
+              (error, stdout, stderr) => {
+                if (error) {
+                  resolve({
+                    success: false,
+                    message: stderr.trim() || stdout.trim() || error.message,
+                  });
+                  return;
+                }
 
-            flashProc.on("close", (code) => {
-              currentFlashProcess = null;
-              try { fs.unlinkSync(tempFilePath); } catch(e) {}
+                // Restart standard monitor
+                const monitorPath = path.join(
+                  path.join(process.env.APP_ROOT!, ".."),
+                  "firmware-tools",
+                  "serial",
+                  "monitor.py",
+                );
+                monitorProcess = spawn(getPythonExe(), [
+                  monitorPath,
+                  "--port",
+                  port,
+                  "--baud",
+                  "115200",
+                ]);
 
-              if (code !== 0) {
-                const msg = fullOutput.trim() || "Process exited with error";
-                resolve({ 
-                  success: false, 
-                  message: msg.includes("ERROR:") ? msg.split("ERROR:")[1].trim() : msg 
+                monitorProcess.stdout?.on("data", (data) => {
+                  if (win) {
+                    win.webContents.send("terminal-output", data.toString("utf8"))
+                  }
                 });
-              } else {
-                resolve({ success: true, message: "Success" });
-              }
-            });
+                monitorProcess.stderr?.on("data", (data) => {
+                });
+                monitorProcess.on("close", () => {
+                  monitorProcess = null;
+                });
 
-            flashProc.on("error", (err) => {
-              currentFlashProcess = null;
-              try { fs.unlinkSync(tempFilePath); } catch(e) {}
-              resolve({ success: false, message: err.message });
-            });
-
-          }, 400); // ⏱ Wait for OS cleanup
-        });
-      }).catch(err => {
-         return { success: false, message: err.message || "Queue Error" };
+                resolve({
+                  success: true,
+                  message: stdout.trim() || "Upload complete — device running",
+                });
+              },
+            );
+          }
+        }, 1000);
       });
-    }
+    },
   );
 
   // 4. Hardware - Start Live Serial Monitor
   ipcMain.handle(
     "hardware:startMonitor",
-    async (_event, { port, baudRate = 115200 }) => {
+    async (_, { port, baudRate = 115200 }) => {
       if (monitorProcess)
         return { success: false, message: "Monitor already running" };
 
@@ -512,7 +504,7 @@ except Exception as e:
       // Listen to every print() statement from the Pico and send it to React
       monitorProcess.stdout?.on("data", (data) => {
         if (win) {
-          win.webContents.send("terminal-output", data.toString().trim());
+          win.webContents.send("terminal-output", data.toString("utf8"))
         }
       });
 
@@ -532,6 +524,57 @@ except Exception as e:
   ipcMain.handle("hardware:stopMonitor", async () => {
     await stopMonitorNative();
     return { success: true };
+  });
+
+  // 5.5 Hardware - Explicitly Stop Execution on Device
+  let isStoppingExecution = false;
+  ipcMain.handle("hardware:stopExecution", async (_, { port }) => {
+    if (isStoppingExecution) {
+      return { success: false, message: "Stop already in progress" };
+    }
+
+    isStoppingExecution = true;
+    await stopMonitorNative();
+
+    return new Promise((resolve) => {
+      const stopScript = `
+import serial, sys, time
+
+success = False
+for attempt in range(15):
+    try:
+        s = serial.Serial('${port}', 115200, timeout=1)
+        # Send Ctrl+C multiple times to ensure break
+        s.write(b'\\r\\x03\\x03\\x03')  
+        time.sleep(0.2)
+        s.close()
+        success = True
+        break
+    except Exception as e:
+        time.sleep(0.2)
+
+if not success:
+    sys.exit(1)
+`;
+      const ser = spawn(getPythonExe(), ["-c", stopScript]);
+
+      ser.on("close", () => {
+        // Restart standard monitor
+        const monitorPath = path.join(process.env.APP_ROOT!, "..", "firmware-tools", "serial", "monitor.py");
+        monitorProcess = spawn(getPythonExe(), [monitorPath, "--port", port, "--baud", "115200"]);
+
+        monitorProcess.stdout?.on("data", (data) => {
+          if (win) win.webContents.send("terminal-output", data.toString("utf8"))
+        });
+        monitorProcess.stderr?.on("data", (data) => {
+          console.error(`Monitor Error: ${data}`);
+        });
+        monitorProcess.on("close", () => { monitorProcess = null; });
+
+        isStoppingExecution = false;
+        resolve({ success: true });
+      });
+    });
   });
 
   // 6. Hardware - Device File System (List Files)
@@ -611,10 +654,8 @@ except Exception as e:
             os.tmpdir(),
             "electro_write_temp_" + Date.now() + ".py",
           );
-          // Force LF newlines to avoid device blob with CRLF 
-          const cleanCode = content.replace(/\r\n/g, "\n");
           try {
-            fs.writeFileSync(tempFilePath, cleanCode, "utf-8");
+            fs.writeFileSync(tempFilePath, content, "utf-8");
           } catch (e) {
             resolve({ success: false, message: "Temp file error" });
             return;
@@ -640,7 +681,7 @@ except Exception as e:
               tempFilePath,
             ],
             { timeout: 30000 },
-            (error, _stdout, stderr) => {
+            (error, stderr) => {
               // clean up safely
               try {
                 fs.unlinkSync(tempFilePath);
@@ -730,6 +771,51 @@ except Exception as e:
       wiring: "Connect your component according to the standard pinout.",
     };
   });
+
+  // 9. Window Controls
+  ipcMain.handle("window:minimize", () => {
+    win?.minimize();
+  });
+  ipcMain.handle("window:maximize", () => {
+    if (win?.isMaximized()) {
+      win.unmaximize();
+    } else {
+      win?.maximize();
+    }
+  });
+  ipcMain.handle("window:close", () => {
+    win?.close();
+  });
+}
+
+function startMcpServer() {
+  const isDev = !!process.env.VITE_DEV_SERVER_URL;
+  let mcpPath: string;
+
+  if (isDev) {
+    mcpPath = path.join(process.env.APP_ROOT!, "..", "mcp-server", "src", "server.js");
+  } else {
+    // In production, mcp-server is placed in resources
+    mcpPath = path.join(process.resourcesPath, "mcp-server", "src", "server.js");
+  }
+
+  if (fs.existsSync(mcpPath)) {
+    console.log(`[ElectroAI] Starting MCP Server at ${mcpPath}...`);
+    mcpProcess = spawn("node", [mcpPath], {
+      stdio: "inherit",
+      env: { ...process.env, PORT: "3001" } // Default MCP port
+    });
+
+    mcpProcess.on("error", (err) => {
+      console.error("[ElectroAI] Failed to start MCP Server:", err);
+    });
+
+    mcpProcess.on("close", (code) => {
+      console.log(`[ElectroAI] MCP Server exited with code ${code}`);
+    });
+  } else {
+    console.warn(`[ElectroAI] MCP Server not found at ${mcpPath}`);
+  }
 }
 
 // --- APP LIFECYCLE ---
@@ -737,6 +823,7 @@ except Exception as e:
 app.on("window-all-closed", () => {
   // Always clean up the monitor if the app closes!
   if (monitorProcess) monitorProcess.kill();
+  if (mcpProcess) mcpProcess.kill();
 
   if (process.platform !== "darwin") {
     app.quit();

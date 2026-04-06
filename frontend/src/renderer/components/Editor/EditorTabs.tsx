@@ -1,4 +1,4 @@
-import { useState, useRef, useEffect } from 'react'
+import { useRef } from 'react'
 import { X, Circle, Play, Square, Save, HardDrive, Cpu } from 'lucide-react'
 import { useAppStore } from '../../store/useAppStore'
 import { FileIcon } from '../../utils/Fileicon'
@@ -6,11 +6,10 @@ import { FileIcon } from '../../utils/Fileicon'
 export default function EditorTabs() {
   const { 
     tabs, activeTabId, setActiveTab, closeTab, saveTab, showNotification,
-    isConnected, selectedPort, interpreter, addTerminalLine, setTerminalOpen, 
-    activeTerminalId, clearTerminal, isFlashing, setIsFlashing
+    interpreter, runExecution, stopExecution,
+    savePromptOpen, setSavePromptOpen, handleSaveClick, saveToLocal, saveToDevice
   } = useAppStore()
 
-  const [showSavePrompt, setShowSavePrompt] = useState(false)
   const saveBtnRef = useRef<HTMLButtonElement>(null)
 
   // no need for click outside listener for a full modal with cancel button
@@ -25,139 +24,14 @@ export default function EditorTabs() {
   const activeTab = tabs.find((t) => t.id === activeTabId)
 
   const handleRun = async () => {
-    if (!isConnected || !selectedPort || !interpreter) {
-      showNotification('Not connected to a device. Please select a port.', 'error')
-      return
-    }
-    if (!activeTab || isFlashing) return
-    
-    clearTerminal(activeTerminalId)
-    setTerminalOpen(true)
-    setIsFlashing(true)
-
-    addTerminalLine(activeTerminalId, `Running ${activeTab.name}...`)
-    addTerminalLine(activeTerminalId, '')
-
-    try {
-      const response = await (window as any).electronAPI.flash({
-        code: activeTab.content,
-        port: selectedPort,
-        language: interpreter.language,
-        boardId: interpreter.id,
-        deviceName: activeTab.name,
-        mode: 'run'
-      } as any)
-
-      if (response.success) {
-        // Monitor is started by the flash call itself now via spawn
-      } else {
-        // Error will be printed by the spawn stream usually, but fallback here
-        if (response.message) {
-           addTerminalLine(activeTerminalId, `❌ Error: ${response.message}`)
-        }
-      }
-    } catch (err: any) {
-      addTerminalLine(activeTerminalId, `❌ Error: ${err.message || String(err)}`)
-    } finally {
-      setIsFlashing(false)
-      addTerminalLine(activeTerminalId, '')
-      addTerminalLine(activeTerminalId, '>>>')
-    }
+    await runExecution()
   }
 
   const handleStop = async () => {
-    if (!isConnected) return
-    try {
-      await (window as any).electronAPI.stopMonitor()
-      addTerminalLine(activeTerminalId, '')
-      addTerminalLine(activeTerminalId, 'KeyboardInterrupt')
-      addTerminalLine(activeTerminalId, '>>>')
-      setIsFlashing(false)
-    } catch {}
+    await stopExecution()
   }
 
-  const saveToDevice = async () => {
-    setShowSavePrompt(false)
-    if (!activeTab) return
-    if (!isConnected || !selectedPort) {
-      showNotification('Not connected to a device.', 'error')
-      return
-    }
-    
-    // Prompt for filename if it's the first save, or let them change it
-    const defaultName = activeTab.filePath?.startsWith('/') ? activeTab.filePath.replace('/', '') : activeTab.name
-    const name = await useAppStore.getState().showPrompt(`Save to ${interpreter?.label} as:`, defaultName)
-    if (!name) return // Cancelled
-    
-    const devPath = name.startsWith('/') ? name : `/${name}`
-    
-    const fileExists = useAppStore.getState().deviceFileTree?.[0]?.children?.some((f: any) => f.filePath === devPath || f.name === name.replace(/^\//, ''))
-    if (fileExists) {
-      addTerminalLine(activeTerminalId, `\x1b[33m⚠ Warning: File "${name}" already exists on device. Overwriting...\x1b[0m`)
-    }
 
-    addTerminalLine(activeTerminalId, `> Saving ${devPath} to device...`)
-    setTerminalOpen(true)
-    
-    // Pause serial monitor so we can safely write
-    await (window as any).electronAPI.stopMonitor()
-    
-    const response = await (window as any).electronAPI.writeFile({
-      port: selectedPort,
-      filePath: devPath,
-      content: activeTab.content
-    })
-    
-    if (response.success) {
-      // Update tab meta to reflect new device file path and source
-      useAppStore.getState().updateTabMeta(activeTab.id, { 
-        name: name.split('/').pop() || name, 
-        filePath: devPath,
-        source: 'device' 
-      })
-      saveTab(activeTab.id)
-      showNotification('Saved to device', 'success')
-      // Refresh tree
-      useAppStore.getState().fetchDeviceFiles()
-    } else {
-      showNotification(`Failed: ${response.message}`, 'error')
-    }
-    
-    // Resume monitor
-    await (window as any).electronAPI.startMonitor({ port: selectedPort, baudRate: 115200 })
-  }
-
-  const saveToLocal = async () => {
-    setShowSavePrompt(false)
-    if (!activeTab) return
-
-    if (activeTab.filePath && activeTab.source !== 'device') {
-      try {
-        await (window as any).electronAPI.createFile({ filePath: activeTab.filePath, content: activeTab.content })
-        saveTab(activeTab.id)
-        showNotification('Saved to computer', 'success')
-      } catch(e) { showNotification('Failed to save to local', 'error')}
-    } else {
-      const result = await (window as any).electronAPI.saveFile({ content: activeTab.content })
-      if (result?.success && result.filePath) {
-        const name = result.filePath.split(/[/\\]/).pop() || 'untitled'
-        useAppStore.getState().updateTabMeta(activeTab.id, { name, filePath: result.filePath })
-        saveTab(activeTab.id)
-        showNotification('Saved to computer', 'success')
-      }
-    }
-  }
-
-  const handleSaveClick = () => {
-    if (!activeTab) return
-    if (activeTab.source === 'device') {
-       saveToDevice()
-    } else if (activeTab.source === 'local' && activeTab.filePath && !activeTab.filePath.startsWith('/')) {
-       saveToLocal()
-    } else {
-       setShowSavePrompt(!showSavePrompt)
-    }
-  }
 
   return (
     <div className="tabs-bar" style={{ display: 'flex', alignItems: 'center', position: 'relative' }}>
@@ -245,7 +119,7 @@ export default function EditorTabs() {
       </div>
 
       {/* The Centered Save Modal Overlay */}
-      {showSavePrompt && (
+      {savePromptOpen && (
         <div style={{
            position: 'fixed', inset: 0, backgroundColor: 'rgba(0,0,0,0.6)', zIndex: 9999,
            display: 'flex', alignItems: 'center', justifyContent: 'center', backdropFilter: 'blur(2px)'
@@ -286,7 +160,7 @@ export default function EditorTabs() {
                  </button>
               </div>
               <div style={{ marginTop: 20, textAlign: 'right' }}>
-                 <button onClick={() => setShowSavePrompt(false)} style={{
+                 <button onClick={() => setSavePromptOpen(false)} style={{
                     background: 'transparent', border: 'none', color: 'var(--text-muted)', cursor: 'pointer', padding: '6px 12px'
                  }}>Cancel</button>
               </div>

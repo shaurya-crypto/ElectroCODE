@@ -1,4 +1,4 @@
-import { contextBridge, ipcRenderer } from "electron";
+const { contextBridge, ipcRenderer } = require("electron");
 
 const listenerMap = new WeakMap<Function, any>();
 
@@ -34,6 +34,7 @@ contextBridge.exposeInMainWorld("electronAPI", {
   startMonitor: (args: any) =>
     ipcRenderer.invoke("hardware:startMonitor", args),
   stopMonitor: () => ipcRenderer.invoke("hardware:stopMonitor"),
+  stopExecution: (args: any) => ipcRenderer.invoke("hardware:stopExecution", args),
   flash: (args: any) => ipcRenderer.invoke("hardware:flash", args),
 
   // File System
@@ -59,6 +60,11 @@ contextBridge.exposeInMainWorld("electronAPI", {
 
   // AI
   generateCode: (args: any) => ipcRenderer.invoke("ai:generate", args),
+
+  // Window Controls
+  minimize: () => ipcRenderer.invoke("window:minimize"),
+  maximize: () => ipcRenderer.invoke("window:maximize"),
+  close: () => ipcRenderer.invoke("window:close"),
 
   // Terminal output events
   onTerminalOutput: (cb: (data: string) => void) => {

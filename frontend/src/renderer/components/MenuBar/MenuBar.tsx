@@ -1,4 +1,5 @@
 import { useState, useRef, useEffect } from 'react'
+import { Minus, Square, X } from 'lucide-react'
 import { useAppStore } from '../../store/useAppStore'
 import { getLanguageFromFilename } from '../../utils/Fileicon'
 
@@ -64,15 +65,15 @@ function MenuDropdown({ items, x, y, onClose }: MenuDropdownProps) {
 
 export default function MenuBar() {
   const {
-    newUntitledTab, closeTab, activeTabId, tabs, saveTab, openTab,
-    setTheme, theme, aiPanelOpen, toggleAiPanel,
+    closeTab, activeTabId, tabs, saveTab, openTab,
+    setTheme, theme, toggleAiPanel,
     terminalOpen, setTerminalOpen, addTerminal,
     setSettingsOpen, setInterpreterModalOpen,
-    openFolder, isConnected, setConnected,
+    openFolder, isConnected,
     selectedPort, interpreter,
-    addTerminalLine, activeTerminalId, clearTerminal,
-    showNotification, isFlashing, setIsFlashing,
+    activeTerminalId, showNotification, addTerminalLine,
     autoSave, setAutoSave,
+    runExecution, stopExecution, handleSaveClick
   } = useAppStore()
 
 useEffect(() => {
@@ -150,14 +151,7 @@ useEffect(() => {
     }},
     { separator: true },
     { label: 'Save',              shortcut: 'Ctrl+S', action: async () => {
-      if (!activeTabId || !activeTab) return
-      saveTab(activeTabId)
-      if (activeTab.filePath && activeTab.source !== 'device') {
-        await (window as any).electronAPI.createFile({ filePath: activeTab.filePath, content: activeTab.content })
-        showNotification(`Saved ${activeTab.name}`, 'success')
-      } else {
-        showNotification('Use Save As for new files', 'info')
-      }
+      handleSaveClick()
     }},
     { label: 'Save As...',        shortcut: 'Ctrl+Shift+S', action: async () => {
       if (!activeTab) return
@@ -175,44 +169,13 @@ useEffect(() => {
     }},
     { separator: true },
     { label: `Save to ${interpreter?.chip ?? 'Device'}...`, disabled: !isConnected, action: async () => {
-      if (!activeTab || !selectedPort || !interpreter) return
-      if (isFlashing) {
-        showNotification('Upload already in progress...', 'warning')
+      const state = useAppStore.getState()
+      if (!state.activeTabId) return
+      if (state.isFlashing) {
+        state.showNotification('Upload already in progress...', 'warning')
         return
       }
-      // Prompt for filename
-      const defaultName = activeTab.filePath?.startsWith('/') ? activeTab.filePath.replace('/', '') : activeTab.name
-      const name = await useAppStore.getState().showPrompt(`Save to ${interpreter.label} as:`, defaultName)
-      if (!name) return
-      const devPath = name.startsWith('/') ? name : `/${name}`
-      
-      const fileExists = useAppStore.getState().deviceFileTree?.[0]?.children?.some((f: any) => f.filePath === devPath || f.name === name.replace(/^\//, ''))
-      if (fileExists) {
-        addTerminalLine(activeTerminalId, `\x1b[33m⚠ Warning: File "${name}" already exists. Overwriting...\x1b[0m`)
-      }
-      
-      setIsFlashing(true)
-      addTerminalLine(activeTerminalId, `> Saving ${devPath} to device...`)
-      setTerminalOpen(true)
-      try {
-        await (window as any).electronAPI.stopMonitor()
-        const response = await (window as any).electronAPI.writeFile({
-          port: selectedPort,
-          filePath: devPath,
-          content: activeTab.content
-        })
-        if (response.success) {
-          addTerminalLine(activeTerminalId, `✅ Saved ${devPath} to device.`)
-          showNotification('Saved to device', 'success')
-          useAppStore.getState().fetchDeviceFiles()
-        } else {
-          addTerminalLine(activeTerminalId, `❌ Failed: ${response.message}`)
-          showNotification(`Failed: ${response.message}`, 'error')
-        }
-      } finally {
-        setIsFlashing(false)
-        await (window as any).electronAPI.startMonitor({ port: selectedPort, baudRate: 115200 })
-      }
+      await state.saveToDevice()
     }},
     { separator: true },
     { label: 'Close Editor',      shortcut: 'Ctrl+W', action: () => { if (activeTabId) closeTab(activeTabId) }},
@@ -255,84 +218,19 @@ useEffect(() => {
 
   const runMenu: MenuEntry[] = [
     { label: 'Run Current File',  shortcut: 'F5', action: async () => {
-      if (!isConnected || !selectedPort || !interpreter) {
-        showNotification('Not connected to a device. Please select a port.', 'error')
-        return
-      }
-      if (!activeTab) return
-      if (isFlashing) {
-        showNotification('Upload already in progress...', 'warning')
-        return
-      }
-      
-      clearTerminal(activeTerminalId)
-      addTerminalLine(activeTerminalId, `> Running ${activeTab.name}`)
-      setTerminalOpen(true)
-      setIsFlashing(true)
-
-      try {
-        const response = await window.ipcRenderer.invoke('hardware:flash', {
-          code: activeTab.content,
-          port: selectedPort,
-          language: interpreter.language,
-          boardId: interpreter.id,
-          deviceName: activeTab.name,
-          mode: 'run'
-        } as any)
-
-        if (!response.success) {
-          addTerminalLine(activeTerminalId, `❌ Error: ${response.message}`)
-        }
-      } finally {
-        setIsFlashing(false)
-      }
+      await runExecution()
     }},
     { label: 'Stop',              shortcut: 'F6', action: async () => {
-      if (!isConnected) return
-      addTerminalLine(activeTerminalId, '> Stopping execution...')
-      await window.ipcRenderer.invoke('hardware:stopMonitor')
+      await stopExecution()
     }},
     { label: 'Upload to Device',  shortcut: 'F7', disabled: !isConnected, action: async () => {
-       if (!activeTab || !selectedPort || !interpreter) return
-       if (isFlashing) {
-         showNotification('Upload already in progress...', 'warning')
-         return
-       }
-
-       // Ask for filename to save on device
-       const defaultName = activeTab.name || 'main.py'
-       const fileName = await useAppStore.getState().showPrompt(`Save to ${interpreter.label || 'Device'} as:`, defaultName)
-       if (!fileName) return
-
-       const devPath = fileName.startsWith('/') ? fileName : `/${fileName}`
-       
-       const fileExists = useAppStore.getState().deviceFileTree?.[0]?.children?.some((f: any) => f.filePath === devPath || f.name === fileName.replace(/^\//, ''))
-       if (fileExists) {
-         addTerminalLine(activeTerminalId, `\x1b[33m⚠ Warning: File "${fileName}" already exists on device. Overwriting...\x1b[0m`)
-       }
-       addTerminalLine(activeTerminalId, `> Uploading ${fileName} to device...`)
-       setTerminalOpen(true)
-       setIsFlashing(true)
-
-       try {
-         const response = await (window as any).electronAPI.writeFile({
-           port: selectedPort,
-           filePath: devPath,
-           content: activeTab.content
-         })
-         if (response.success) {
-           addTerminalLine(activeTerminalId, `\x1b[32m✓ Uploaded ${fileName} to device.\x1b[0m`)
-           showNotification('Successfully uploaded to device', 'success')
-         } else {
-           addTerminalLine(activeTerminalId, `❌ Upload Failed: ${response.message}`)
-           showNotification(`Upload failed: ${response.message}`, 'error')
-         }
-       } catch (err: any) {
-         addTerminalLine(activeTerminalId, `❌ Upload Failed: ${err.message}`)
-       } finally {
-         setIsFlashing(false)
-         await useAppStore.getState().fetchDeviceFiles()
-       }
+      const state = useAppStore.getState()
+      if (!state.activeTabId) return
+      if (state.isFlashing) {
+        state.showNotification('Upload already in progress...', 'warning')
+        return
+      }
+      await state.saveToDevice()
     }},
     { separator: true },
     { label: 'Flash Firmware...', disabled: !interpreter, action: () => {
@@ -392,7 +290,7 @@ useEffect(() => {
   ]
 
   return (
-    <div className="menubar" style={{ userSelect: 'none' }}>
+    <div className="menubar" style={{ userSelect: 'none', display: 'flex', alignItems: 'center', WebkitAppRegion: 'drag' } as any}>
       {/* App brand */}
       <div style={{
         padding: '0 12px',
@@ -400,7 +298,9 @@ useEffect(() => {
         alignItems: 'center',
         gap: 6,
         borderRight: '1px solid var(--border)',
-      }}>
+        height: '100%',
+        WebkitAppRegion: 'no-drag'
+      } as any}>
         <div style={{
           width: 18, height: 18,
           background: 'var(--accent)',
@@ -411,15 +311,32 @@ useEffect(() => {
         </div>
       </div>
 
-      {menus.map(({ name, items }) => (
-        <button
-          key={name}
-          className={`menu-item ${openMenu === name ? 'open' : ''}`}
-          onClick={(e) => open(name, e)}
-        >
-          {name}
+      <div style={{ display: 'flex', alignItems: 'center', WebkitAppRegion: 'no-drag' } as any}>
+        {menus.map(({ name }) => (
+          <button
+            key={name}
+            className={`menu-item ${openMenu === name ? 'open' : ''}`}
+            onClick={(e) => open(name, e)}
+          >
+            {name}
+          </button>
+        ))}
+      </div>
+
+      <div style={{ flex: 1 }} />
+
+      {/* Window Controls */}
+      <div style={{ display: 'flex', alignItems: 'center', WebkitAppRegion: 'no-drag' } as any}>
+        <button className="window-control-btn" onClick={() => (window as any).electronAPI.minimize()}>
+          <Minus size={14} />
         </button>
-      ))}
+        <button className="window-control-btn" onClick={() => (window as any).electronAPI.maximize()}>
+          <Square size={12} />
+        </button>
+        <button className="window-control-btn close" onClick={() => (window as any).electronAPI.close()}>
+          <X size={16} />
+        </button>
+      </div>
 
       {openMenu && (
         <MenuDropdown

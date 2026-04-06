@@ -13,6 +13,14 @@ import tempfile
 import time
 import serial
 
+# Ensure stdout/stderr handle UTF-8 on Windows
+if sys.platform == "win32":
+    if hasattr(sys.stdout, 'reconfigure'):
+        sys.stdout.reconfigure(encoding='utf-8')
+    if hasattr(sys.stderr, 'reconfigure'):
+        sys.stderr.reconfigure(encoding='utf-8')
+
+
 # ─────────────────────────────────────────────
 #  Exit codes (so Electron can handle them cleanly)
 # ─────────────────────────────────────────────
@@ -223,7 +231,7 @@ def upload_micropython(port: str, file_path: str, board_id: str,
         sys.exit(ret)
 
     # ── Flash mode ──
-    info(f"Uploading '{base}' → '{target_name}' via mpremote ...")
+    info(f"Uploading '{base}' -> '{target_name}' via mpremote ...")
     ok_flag, out = run([
         sys.executable, '-m', 'mpremote',
         'connect', port,
@@ -264,7 +272,7 @@ def upload_circuitpython(port: str, file_path: str,
         sys.exit(ret)
 
     # ── Flash mode ──
-    info(f"Uploading '{base}' → '{target_name}' via mpremote ...")
+    info(f"Uploading '{base}' -> '{target_name}' via mpremote ...")
     ok_flag, out = run([
         sys.executable, '-m', 'mpremote',
         'connect', port,

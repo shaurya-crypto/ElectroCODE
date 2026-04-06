@@ -165,20 +165,23 @@ button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-
   background: var(--menubar-bg);
   border-bottom: 1px solid var(--border);
   display: flex;
-  align-items: stretch;
+  align-items: center;
   flex-shrink: 0;
   user-select: none;
+  -webkit-app-region: drag;
 }
 .menu-item {
   padding: 0 10px;
   display: flex;
   align-items: center;
   cursor: pointer;
+  height: 100%;
   font-size: 13px;
   color: var(--text-primary);
   position: relative;
   border: none;
   background: none;
+  -webkit-app-region: no-drag;
 }
 .menu-item:hover, .menu-item.open {
   background: var(--bg-hover);
@@ -216,6 +219,28 @@ button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-
   height: 1px;
   background: var(--border);
   margin: 4px 0;
+}
+
+/* ── Window Controls ── */
+.window-control-btn {
+  width: 45px;
+  height: var(--menubar-h);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: none;
+  background: transparent;
+  color: var(--text-primary);
+  cursor: pointer;
+  transition: background 0.1s;
+  -webkit-app-region: no-drag;
+}
+.window-control-btn:hover {
+  background: var(--bg-hover);
+}
+.window-control-btn.close:hover {
+  background: #e81123;
+  color: white;
 }
 
 /* ── Activity Bar ── */

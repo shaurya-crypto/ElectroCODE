@@ -1,0 +1,42 @@
+import network
+import time
+import machine
+
+led = machine.Pin("LED", machine.Pin.OUT)
+
+wlan = network.WLAN(network.STA_IF)
+wlan.active(True)
+
+print("Scanning WiFi networks...\n")
+
+while True:
+    # Blink the LED while scanning
+    led.value(1)
+    time.sleep(0.1)
+    led.value(0)
+    time.sleep(0.1)
+
+    networks = wlan.scan()
+    
+    print("---- Available Networks ----")
+    
+    for net in networks:
+        ssid = net[0].decode()
+        rssi = net[3]
+        security = net[4]
+
+        if security == 0:
+            sec_type = "Open"
+        elif security == 1:
+            sec_type = "WEP"
+        elif security == 2:
+            sec_type = "WPA-PSK"
+        elif security == 3:
+            sec_type = "WPA2-PSK"
+        else:
+            sec_type = "Unknown"
+
+        print(f"SSID: {ssid}")
+        print(f"Signal: {rssi} dBm")
+        print(f"Security: {sec_type}")
+        print("--------------------------")
