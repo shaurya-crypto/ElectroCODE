@@ -2,7 +2,7 @@
 
 <img src="https://img.shields.io/badge/ElectroAI-IDE-blue?style=for-the-badge&logo=electron&logoColor=white" alt="ElectroAI IDE" />
 
-# ⚡ ElectroAI IDE
+# ⚡ ElectroCODE IDE
 
 ### AI-Powered Desktop IDE for Embedded Systems Development
 
@@ -15,7 +15,7 @@
 
 <br />
 
-> **ElectroAI** is a free, open-source, AI-integrated desktop IDE built specifically for embedded systems developers. Write, debug, and deploy code to your microcontrollers — with an intelligent AI assistant by your side at every step.
+> **ElectroCODE** is a free, open-source, AI-integrated desktop IDE built specifically for embedded systems developers. Write, debug, and deploy code to your microcontrollers — with an intelligent AI assistant by your side at every step.
 
 <br />
 
@@ -44,7 +44,7 @@
 
 ## 🚀 About the Project
 
-ElectroAI IDE is a **VS Code-style desktop application** designed from the ground up for embedded systems developers. Whether you're a beginner experimenting with Arduino or a professional building IoT solutions on ESP32, ElectroAI gives you a clean, powerful, and AI-enhanced coding environment — no browser required.
+ElectroCODE IDE is a **VS Code-style desktop application** designed from the ground up for embedded systems developers. Whether you're a beginner experimenting with Arduino or a professional building IoT solutions on ESP32, ElectroAI gives you a clean, powerful, and AI-enhanced coding environment — no browser required.
 
 Built with **Electron + React + TypeScript**, it brings the familiarity of modern code editors into the world of microcontrollers, with deep AI integration that helps you write better code, debug faster, and learn along the way.
 
