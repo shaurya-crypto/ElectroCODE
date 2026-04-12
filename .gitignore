@@ -3,5 +3,6 @@
 /node_modules
 /dist
 /out
-/release
-/
+frontend/release
+.DS_Store
+*.log

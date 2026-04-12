@@ -127,7 +127,6 @@ export default function TerminalPanel() {
   const [histIdx, setHistIdx]     = useState(-1)
   const [inputVal, setInputVal]   = useState('')
   const [savedInput, setSavedInput] = useState('')   // saved draft while browsing history
-  const [isAwaitingInput, setIsAwaitingInput] = useState(false) // input() call
 
   // Auto-scroll on new lines
   useEffect(() => {

@@ -59,7 +59,8 @@ export default function DevicePanel() {
       });
 
       if (!check?.connected) {
-        showNotification(check?.message ?? "Chip not connected", "error");
+        // Suppress simple notification, use strong blocking overlay instead
+        store.showErrorOverlay(check?.message ?? "Chip not connected. Check physical connection and port.");
         addTerminalLine(activeTerminalId, `ERROR: ${check?.message}`);
         store.unlockDevice();
         return;

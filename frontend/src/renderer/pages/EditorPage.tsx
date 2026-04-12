@@ -11,7 +11,8 @@ import AIPanel from '../components/AI/AIPanel'
 import TerminalPanel from '../components/Terminal/TerminalPanel'
 import SettingsPanel from '../components/Settings/SettingsPanel'
 import InterpreterModal from '../components/Setup/InterpreterModal'
-
+import DeviceBusyOverlay from '../components/DeviceBusyOverlay'
+import ErrorOverlay from '../components/ErrorOverlay'
 export default function EditorPage() {
   const {
     sidebarView, setSidebarView, sidebarWidth, setSidebarWidth,
@@ -299,6 +300,8 @@ export default function EditorPage() {
       </div>
 
       {/* ── Overlays ── */}
+      <DeviceBusyOverlay />
+      <ErrorOverlay />
       {settingsOpen && <SettingsPanel />}
       {interpreterModalOpen && <InterpreterModal />}
 

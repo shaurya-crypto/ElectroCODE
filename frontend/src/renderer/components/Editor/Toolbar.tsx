@@ -36,7 +36,7 @@ export default function Toolbar() {
           >
             <span style={{ fontSize: 11 }}>{langIcon[tab.language] ?? '📄'}</span>
             <span>{tab.name}</span>
-            {tab.modified && (
+            {tab.content !== tab.savedContent && (
               <Circle
                 size={6}
                 fill="var(--accent)"

@@ -1,6 +1,6 @@
 import { useState } from 'react'
 import { X } from 'lucide-react'
-import { useAppStore, AIProvider, APIConfig } from '../../store/useAppStore'
+import { useAppStore, AIProvider } from '../../store/useAppStore'
 
 const NAV_ITEMS = [
   { id: 'appearance', label: 'Appearance' },

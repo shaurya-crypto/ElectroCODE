@@ -20,13 +20,36 @@ let win: BrowserWindow | null;
 let monitorProcess: ChildProcess | null = null; // Keeps track of the live serial monitor
 let mcpProcess: ChildProcess | null = null; // MCP Server process
 
-function getPythonExe(): string {
-  // Check Thonny Python as fallback since Windows Appalias can cause 'python' command to fail
-  const thonnyPath = path.join(os.homedir(), "AppData", "Local", "Programs", "Thonny", "python.exe");
-  if (fs.existsSync(thonnyPath)) {
-    return thonnyPath;
+// Ensure single instance
+const gotTheLock = app.requestSingleInstanceLock();
+if (!gotTheLock) {
+  app.quit();
+}
+
+function getResourcePath(subPath: string): string {
+  const isDev = !!process.env.VITE_DEV_SERVER_URL;
+  if (isDev) {
+    return path.join(process.env.APP_ROOT!, "..", subPath);
   }
-  return "python";
+  return path.join(process.resourcesPath, subPath);
+}
+
+function getPythonExe(): string {
+  if (process.platform === "win32") {
+    // Check Thonny Python as fallback since Windows Appalias can cause 'python' command to fail
+    const thonnyPath = path.join(os.homedir(), "AppData", "Local", "Programs", "Thonny", "python.exe");
+    if (fs.existsSync(thonnyPath)) {
+      return thonnyPath;
+    }
+    return "python";
+  }
+  // Linux / macOS fallback
+  try {
+    execSync("python3 --version", { stdio: "ignore" });
+    return "python3";
+  } catch {
+    return "python";
+  }
 }
 
 function createWindow() {
@@ -115,8 +138,6 @@ async function withPortAccess<T>(_port: string, operation: () => Promise<T>): Pr
 }
 
 function setupIpcHandlers() {
-  const projectRoot = path.join(process.env.APP_ROOT!, "..");
-
   // 1. File System - Open Folder Dialog
   ipcMain.handle("dialog:openFolder", async () => {
     const { canceled, filePaths } = await dialog.showOpenDialog({
@@ -230,8 +251,7 @@ function setupIpcHandlers() {
   // API Config / .env Sync
   ipcMain.handle("saveApiSettings", async (_, config) => {
     try {
-      const LOCAL_APP_DATA = process.env.LOCALAPPDATA || path.join(os.homedir(), "AppData", "Local");
-      const electroDir = path.join(LOCAL_APP_DATA, "ElectroAI");
+      const electroDir = path.join(app.getPath("userData"), "config");
       if (!fs.existsSync(electroDir)) {
         fs.mkdirSync(electroDir, { recursive: true });
       }
@@ -382,12 +402,7 @@ except Exception as e:
 
         // Wait for Windows to release COM port lock (stopMonitor already waited, wait an extra 1000ms)
         setTimeout(() => {
-          const uploaderPath = path.join(
-            path.join(process.env.APP_ROOT!, ".."),
-            "firmware-tools",
-            "core",
-            "uploader.py",
-          );
+          const uploaderPath = getResourcePath(path.join("firmware-tools", "core", "uploader.py"));
 
           const args = [
             uploaderPath,
@@ -441,12 +456,7 @@ except Exception as e:
                 }
 
                 // Restart standard monitor
-                const monitorPath = path.join(
-                  path.join(process.env.APP_ROOT!, ".."),
-                  "firmware-tools",
-                  "serial",
-                  "monitor.py",
-                );
+                const monitorPath = getResourcePath(path.join("firmware-tools", "serial", "monitor.py"));
                 monitorProcess = spawn(getPythonExe(), [
                   monitorPath,
                   "--port",
@@ -460,7 +470,7 @@ except Exception as e:
                     win.webContents.send("terminal-output", data.toString("utf8"))
                   }
                 });
-                monitorProcess.stderr?.on("data", (data) => {
+                monitorProcess.stderr?.on("data", () => {
                 });
                 monitorProcess.on("close", () => {
                   monitorProcess = null;
@@ -485,12 +495,7 @@ except Exception as e:
       if (monitorProcess)
         return { success: false, message: "Monitor already running" };
 
-      const scriptPath = path.join(
-        projectRoot,
-        "firmware-tools",
-        "serial",
-        "monitor.py",
-      );
+      const scriptPath = getResourcePath(path.join("firmware-tools", "serial", "monitor.py"));
 
       // Use spawn() instead of exec() so we can stream the data continuously
       monitorProcess = spawn(getPythonExe(), [
@@ -560,7 +565,7 @@ if not success:
 
       ser.on("close", () => {
         // Restart standard monitor
-        const monitorPath = path.join(process.env.APP_ROOT!, "..", "firmware-tools", "serial", "monitor.py");
+        const monitorPath = getResourcePath(path.join("firmware-tools", "serial", "monitor.py"));
         monitorProcess = spawn(getPythonExe(), [monitorPath, "--port", port, "--baud", "115200"]);
 
         monitorProcess.stdout?.on("data", (data) => {
@@ -581,12 +586,7 @@ if not success:
   ipcMain.handle("hardware:listFiles", async (_event, { port }) => {
     return withPortAccess(port, () => {
       return new Promise((resolve) => {
-        const scriptPath = path.join(
-          projectRoot,
-          "firmware-tools",
-          "core",
-          "fs_manager.py",
-        );
+        const scriptPath = getResourcePath(path.join("firmware-tools", "core", "fs_manager.py"));
 
         exec(
           `"${getPythonExe()}" "${scriptPath}" --port ${port} --action list`,
@@ -614,12 +614,7 @@ if not success:
   ipcMain.handle("hardware:readFile", async (_event, { port, filePath }) => {
     return withPortAccess(port, () => {
       return new Promise((resolve) => {
-        const scriptPath = path.join(
-          projectRoot,
-          "firmware-tools",
-          "core",
-          "fs_manager.py"
-        );
+        const scriptPath = getResourcePath(path.join("firmware-tools", "core", "fs_manager.py"));
 
         exec(
           `"${getPythonExe()}" "${scriptPath}" --port ${port} --action read --path "${filePath}"`,
@@ -661,12 +656,7 @@ if not success:
             return;
           }
 
-          const scriptPath = path.join(
-            projectRoot,
-            "firmware-tools",
-            "core",
-            "fs_manager.py",
-          );
+          const scriptPath = getResourcePath(path.join("firmware-tools", "core", "fs_manager.py"));
           execFile(
             getPythonExe(),
             [
@@ -705,12 +695,7 @@ if not success:
   ipcMain.handle("hardware:deleteFile", async (_event, { port, filePath }) => {
     return withPortAccess(port, () => {
       return new Promise((resolve) => {
-        const scriptPath = path.join(
-          projectRoot,
-          "firmware-tools",
-          "core",
-          "fs_manager.py",
-        );
+        const scriptPath = getResourcePath(path.join("firmware-tools", "core", "fs_manager.py"));
 
         exec(
           `"${getPythonExe()}" "${scriptPath}" --port ${port} --action delete --path "${filePath}"`,
@@ -736,12 +721,7 @@ if not success:
   ipcMain.handle("hardware:renameFile", async (_event, { port, oldPath, newPath }) => {
     return withPortAccess(port, () => {
       return new Promise((resolve) => {
-        const scriptPath = path.join(
-          projectRoot,
-          "firmware-tools",
-          "core",
-          "fs_manager.py",
-        );
+        const scriptPath = getResourcePath(path.join("firmware-tools", "core", "fs_manager.py"));
 
         exec(
           `"${getPythonExe()}" "${scriptPath}" --port ${port} --action rename --path "${oldPath}" --newpath "${newPath}"`,
@@ -789,22 +769,19 @@ if not success:
 }
 
 function startMcpServer() {
-  const isDev = !!process.env.VITE_DEV_SERVER_URL;
-  let mcpPath: string;
-
-  if (isDev) {
-    mcpPath = path.join(process.env.APP_ROOT!, "..", "mcp-server", "src", "server.js");
-  } else {
-    // In production, mcp-server is placed in resources
-    mcpPath = path.join(process.resourcesPath, "mcp-server", "src", "server.js");
-  }
+  const mcpPath = getResourcePath(path.join("mcp-server", "src", "server.js"));
 
   if (fs.existsSync(mcpPath)) {
     console.log(`[ElectroAI] Starting MCP Server at ${mcpPath}...`);
-    mcpProcess = spawn("node", [mcpPath], {
-      stdio: "inherit",
-      env: { ...process.env, PORT: "3001" } // Default MCP port
+    // Use the bundled Node.js executable provided by Electron!
+    // This allows it to run even if Node.js isn't installed.
+    mcpProcess = spawn(process.execPath, [mcpPath], {
+      stdio: "pipe",
+      env: { ...process.env, ELECTRON_RUN_AS_NODE: "1", PORT: "4000", WS_PORT: "4001" } 
     });
+
+    mcpProcess.stdout?.on("data", data => console.log(`[MCP] ${data}`));
+    mcpProcess.stderr?.on("data", data => console.error(`[MCP] ${data}`));
 
     mcpProcess.on("error", (err) => {
       console.error("[ElectroAI] Failed to start MCP Server:", err);
@@ -820,14 +797,43 @@ function startMcpServer() {
 
 // --- APP LIFECYCLE ---
 
-app.on("window-all-closed", () => {
-  // Always clean up the monitor if the app closes!
-  if (monitorProcess) monitorProcess.kill();
-  if (mcpProcess) mcpProcess.kill();
+function killAllProcesses() {
+  if (monitorProcess) {
+    try {
+      if (process.platform === "win32" && monitorProcess.pid) {
+        execSync(`taskkill /pid ${monitorProcess.pid} /T /F`, { stdio: "ignore" });
+      } else {
+        monitorProcess.kill("SIGKILL");
+      }
+    } catch {}
+  }
+  if (mcpProcess) {
+    try {
+      if (process.platform === "win32" && mcpProcess.pid) {
+        execSync(`taskkill /pid ${mcpProcess.pid} /T /F`, { stdio: "ignore" });
+      } else {
+        mcpProcess.kill("SIGKILL");
+      }
+    } catch {}
+  }
+}
 
+app.on("before-quit", () => {
+  killAllProcesses();
+});
+
+app.on("window-all-closed", () => {
+  killAllProcesses();
   if (process.platform !== "darwin") {
     app.quit();
     win = null;
+  }
+});
+
+app.on("second-instance", () => {
+  if (win) {
+    if (win.isMinimized()) win.restore();
+    win.focus();
   }
 });
 
@@ -837,7 +843,10 @@ app.on("activate", () => {
   }
 });
 
-app.whenReady().then(() => {
-  setupIpcHandlers();
-  createWindow();
-});
+if (gotTheLock) {
+  app.whenReady().then(() => {
+    setupIpcHandlers();
+    startMcpServer();
+    createWindow();
+  });
+}

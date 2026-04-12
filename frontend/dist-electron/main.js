@@ -12,12 +12,32 @@ const RENDERER_DIST = path.join(process.env.APP_ROOT, "dist");
 process.env.VITE_PUBLIC = VITE_DEV_SERVER_URL ? path.join(process.env.APP_ROOT, "public") : RENDERER_DIST;
 let win;
 let monitorProcess = null;
-function getPythonExe() {
-  const thonnyPath = path.join(os.homedir(), "AppData", "Local", "Programs", "Thonny", "python.exe");
-  if (fs.existsSync(thonnyPath)) {
-    return thonnyPath;
+let mcpProcess = null;
+const gotTheLock = app.requestSingleInstanceLock();
+if (!gotTheLock) {
+  app.quit();
+}
+function getResourcePath(subPath) {
+  const isDev = !!process.env.VITE_DEV_SERVER_URL;
+  if (isDev) {
+    return path.join(process.env.APP_ROOT, "..", subPath);
   }
-  return "python";
+  return path.join(process.resourcesPath, subPath);
+}
+function getPythonExe() {
+  if (process.platform === "win32") {
+    const thonnyPath = path.join(os.homedir(), "AppData", "Local", "Programs", "Thonny", "python.exe");
+    if (fs.existsSync(thonnyPath)) {
+      return thonnyPath;
+    }
+    return "python";
+  }
+  try {
+    execSync("python3 --version", { stdio: "ignore" });
+    return "python3";
+  } catch {
+    return "python";
+  }
 }
 function createWindow() {
   win = new BrowserWindow({
@@ -92,7 +112,6 @@ async function withPortAccess(_port, operation) {
   return await operation();
 }
 function setupIpcHandlers() {
-  const projectRoot = path.join(process.env.APP_ROOT, "..");
   ipcMain.handle("dialog:openFolder", async () => {
     const { canceled, filePaths } = await dialog.showOpenDialog({
       properties: ["openDirectory"]
@@ -195,8 +214,7 @@ function setupIpcHandlers() {
   });
   ipcMain.handle("saveApiSettings", async (_, config) => {
     try {
-      const LOCAL_APP_DATA = process.env.LOCALAPPDATA || path.join(os.homedir(), "AppData", "Local");
-      const electroDir = path.join(LOCAL_APP_DATA, "ElectroAI");
+      const electroDir = path.join(app.getPath("userData"), "config");
       if (!fs.existsSync(electroDir)) {
         fs.mkdirSync(electroDir, { recursive: true });
       }
@@ -323,12 +341,7 @@ except Exception as e:
           return;
         }
         setTimeout(() => {
-          const uploaderPath = path.join(
-            path.join(process.env.APP_ROOT, ".."),
-            "firmware-tools",
-            "core",
-            "uploader.py"
-          );
+          const uploaderPath = getResourcePath(path.join("firmware-tools", "core", "uploader.py"));
           const args = [
             uploaderPath,
             "--port",
@@ -372,12 +385,7 @@ except Exception as e:
                   });
                   return;
                 }
-                const monitorPath = path.join(
-                  path.join(process.env.APP_ROOT, ".."),
-                  "firmware-tools",
-                  "serial",
-                  "monitor.py"
-                );
+                const monitorPath = getResourcePath(path.join("firmware-tools", "serial", "monitor.py"));
                 monitorProcess = spawn(getPythonExe(), [
                   monitorPath,
                   "--port",
@@ -390,7 +398,7 @@ except Exception as e:
                     win.webContents.send("terminal-output", data.toString("utf8"));
                   }
                 });
-                monitorProcess.stderr?.on("data", (data) => {
+                monitorProcess.stderr?.on("data", () => {
                 });
                 monitorProcess.on("close", () => {
                   monitorProcess = null;
@@ -411,12 +419,7 @@ except Exception as e:
     async (_, { port, baudRate = 115200 }) => {
       if (monitorProcess)
         return { success: false, message: "Monitor already running" };
-      const scriptPath = path.join(
-        projectRoot,
-        "firmware-tools",
-        "serial",
-        "monitor.py"
-      );
+      const scriptPath = getResourcePath(path.join("firmware-tools", "serial", "monitor.py"));
       monitorProcess = spawn(getPythonExe(), [
         scriptPath,
         "--port",
@@ -471,7 +474,7 @@ if not success:
 `;
       const ser = spawn(getPythonExe(), ["-c", stopScript]);
       ser.on("close", () => {
-        const monitorPath = path.join(process.env.APP_ROOT, "..", "firmware-tools", "serial", "monitor.py");
+        const monitorPath = getResourcePath(path.join("firmware-tools", "serial", "monitor.py"));
         monitorProcess = spawn(getPythonExe(), [monitorPath, "--port", port, "--baud", "115200"]);
         monitorProcess.stdout?.on("data", (data) => {
           if (win) win.webContents.send("terminal-output", data.toString("utf8"));
@@ -490,12 +493,7 @@ if not success:
   ipcMain.handle("hardware:listFiles", async (_event, { port }) => {
     return withPortAccess(port, () => {
       return new Promise((resolve) => {
-        const scriptPath = path.join(
-          projectRoot,
-          "firmware-tools",
-          "core",
-          "fs_manager.py"
-        );
+        const scriptPath = getResourcePath(path.join("firmware-tools", "core", "fs_manager.py"));
         exec(
           `"${getPythonExe()}" "${scriptPath}" --port ${port} --action list`,
           { timeout: 3e4 },
@@ -520,12 +518,7 @@ if not success:
   ipcMain.handle("hardware:readFile", async (_event, { port, filePath }) => {
     return withPortAccess(port, () => {
       return new Promise((resolve) => {
-        const scriptPath = path.join(
-          projectRoot,
-          "firmware-tools",
-          "core",
-          "fs_manager.py"
-        );
+        const scriptPath = getResourcePath(path.join("firmware-tools", "core", "fs_manager.py"));
         exec(
           `"${getPythonExe()}" "${scriptPath}" --port ${port} --action read --path "${filePath}"`,
           { timeout: 3e4 },
@@ -562,12 +555,7 @@ if not success:
             resolve({ success: false, message: "Temp file error" });
             return;
           }
-          const scriptPath = path.join(
-            projectRoot,
-            "firmware-tools",
-            "core",
-            "fs_manager.py"
-          );
+          const scriptPath = getResourcePath(path.join("firmware-tools", "core", "fs_manager.py"));
           execFile(
             getPythonExe(),
             [
@@ -603,12 +591,7 @@ if not success:
   ipcMain.handle("hardware:deleteFile", async (_event, { port, filePath }) => {
     return withPortAccess(port, () => {
       return new Promise((resolve) => {
-        const scriptPath = path.join(
-          projectRoot,
-          "firmware-tools",
-          "core",
-          "fs_manager.py"
-        );
+        const scriptPath = getResourcePath(path.join("firmware-tools", "core", "fs_manager.py"));
         exec(
           `"${getPythonExe()}" "${scriptPath}" --port ${port} --action delete --path "${filePath}"`,
           { timeout: 3e4 },
@@ -631,12 +614,7 @@ if not success:
   ipcMain.handle("hardware:renameFile", async (_event, { port, oldPath, newPath }) => {
     return withPortAccess(port, () => {
       return new Promise((resolve) => {
-        const scriptPath = path.join(
-          projectRoot,
-          "firmware-tools",
-          "core",
-          "fs_manager.py"
-        );
+        const scriptPath = getResourcePath(path.join("firmware-tools", "core", "fs_manager.py"));
         exec(
           `"${getPythonExe()}" "${scriptPath}" --port ${port} --action rename --path "${oldPath}" --newpath "${newPath}"`,
           { timeout: 3e4 },
@@ -676,11 +654,62 @@ if not success:
     win?.close();
   });
 }
+function startMcpServer() {
+  const mcpPath = getResourcePath(path.join("mcp-server", "src", "server.js"));
+  if (fs.existsSync(mcpPath)) {
+    console.log(`[ElectroAI] Starting MCP Server at ${mcpPath}...`);
+    mcpProcess = spawn(process.execPath, [mcpPath], {
+      stdio: "pipe",
+      env: { ...process.env, ELECTRON_RUN_AS_NODE: "1", PORT: "4000", WS_PORT: "4001" }
+    });
+    mcpProcess.stdout?.on("data", (data) => console.log(`[MCP] ${data}`));
+    mcpProcess.stderr?.on("data", (data) => console.error(`[MCP] ${data}`));
+    mcpProcess.on("error", (err) => {
+      console.error("[ElectroAI] Failed to start MCP Server:", err);
+    });
+    mcpProcess.on("close", (code) => {
+      console.log(`[ElectroAI] MCP Server exited with code ${code}`);
+    });
+  } else {
+    console.warn(`[ElectroAI] MCP Server not found at ${mcpPath}`);
+  }
+}
+function killAllProcesses() {
+  if (monitorProcess) {
+    try {
+      if (process.platform === "win32" && monitorProcess.pid) {
+        execSync(`taskkill /pid ${monitorProcess.pid} /T /F`, { stdio: "ignore" });
+      } else {
+        monitorProcess.kill("SIGKILL");
+      }
+    } catch {
+    }
+  }
+  if (mcpProcess) {
+    try {
+      if (process.platform === "win32" && mcpProcess.pid) {
+        execSync(`taskkill /pid ${mcpProcess.pid} /T /F`, { stdio: "ignore" });
+      } else {
+        mcpProcess.kill("SIGKILL");
+      }
+    } catch {
+    }
+  }
+}
+app.on("before-quit", () => {
+  killAllProcesses();
+});
 app.on("window-all-closed", () => {
-  if (monitorProcess) monitorProcess.kill();
+  killAllProcesses();
   if (process.platform !== "darwin") {
     app.quit();
     win = null;
+  }
+});
+app.on("second-instance", () => {
+  if (win) {
+    if (win.isMinimized()) win.restore();
+    win.focus();
   }
 });
 app.on("activate", () => {
@@ -688,10 +717,13 @@ app.on("activate", () => {
     createWindow();
   }
 });
-app.whenReady().then(() => {
-  setupIpcHandlers();
-  createWindow();
-});
+if (gotTheLock) {
+  app.whenReady().then(() => {
+    setupIpcHandlers();
+    startMcpServer();
+    createWindow();
+  });
+}
 export {
   MAIN_DIST,
   RENDERER_DIST,

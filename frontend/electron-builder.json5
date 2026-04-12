@@ -1,7 +1,7 @@
 // @see - https://www.electron.build/configuration/configuration
 {
   "$schema": "https://raw.githubusercontent.com/electron-userland/electron-builder/master/packages/app-builder-lib/scheme.json",
-  "appId": "YourAppID",
+  "appId": "com.electroai.electrocode",
   "asar": true,
   "productName": "Electro CODE",
   "directories": {
@@ -17,24 +17,40 @@
       "to": "mcp-server",
       "filter": [
         "src/**/*",
+        "config/**/*",
         "package.json",
         "node_modules/**/*"
+      ]
+    },
+    {
+      "from": "../ai-engine",
+      "to": "ai-engine",
+      "filter": [
+        "src/**/*",
+        "package.json",
+        "node_modules/**/*"
+      ]
+    },
+    {
+      "from": "../firmware-tools",
+      "to": "firmware-tools",
+      "filter": [
+        "**/*",
+        "!__pycache__/*",
+        "!**/*.pyc"
       ]
     }
   ],
   "mac": {
-    "target": [
-      "dmg"
-    ],
-    "artifactName": "${productName}-Mac-${version}-Installer.${ext}"
+    "target": ["dmg", "zip"],
+    "artifactName": "${productName}-Mac-${version}-${arch}.${ext}",
+    "category": "public.app-category.developer-tools"
   },
   "win": {
     "target": [
       {
         "target": "nsis",
-        "arch": [
-          "x64"
-        ]
+        "arch": ["x64"]
       }
     ],
     "artifactName": "${productName}-Windows-${version}-Setup.${ext}"
@@ -46,9 +62,8 @@
     "deleteAppDataOnUninstall": false
   },
   "linux": {
-    "target": [
-      "AppImage"
-    ],
-    "artifactName": "${productName}-Linux-${version}.${ext}"
+    "target": ["AppImage", "deb"],
+    "category": "Development",
+    "artifactName": "${productName}-Linux-${version}-${arch}.${ext}"
   }
 }

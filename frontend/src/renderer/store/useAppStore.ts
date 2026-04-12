@@ -354,10 +354,16 @@ interface AppStore {
   ) => void;
   clearNotification: () => void;
 
+  // Error Overlay
+  errorOverlay: string | null;
+  showErrorOverlay: (msg: string) => void;
+  clearErrorOverlay: () => void;
+
   // Prompts
   promptConfig: { msg: string; defaultValue: string; resolve: (val: string | null) => void } | null;
   showPrompt: (msg: string, defaultValue?: string) => Promise<string | null>;
   resolvePrompt: (val: string | null) => void;
+
 
   getFlattenedFiles: () => string[];
 
@@ -455,6 +461,11 @@ export const useAppStore = create<AppStore>()(
         return true;
       },
       unlockDevice: () => set({ isDeviceBusy: false, busyReason: "" }),
+
+      // Error overlay
+      errorOverlay: null,
+      showErrorOverlay: (msg) => set({ errorOverlay: msg }),
+      clearErrorOverlay: () => set({ errorOverlay: null }),
 
       // Tabs
       tabs: [],

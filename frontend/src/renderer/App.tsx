@@ -36,10 +36,12 @@ export default function App() {
               showNotification(`Resumed session: ${currentStore.interpreter.label} on ${currentStore.selectedPort}`, 'info');
             } else {
               setConnected(false);
+              currentStore.showErrorOverlay(check?.message ?? `Port ${currentStore.selectedPort} is busy or disconnected.`);
               console.warn(`[Auto-Init] Port ${currentStore.selectedPort} busy or disconnected.`);
             }
-          } catch (e) {
+          } catch (e: any) {
             setConnected(false);
+            currentStore.showErrorOverlay(`Fatal Error: ${e.message}`);
           }
         }
       }, 2000);
