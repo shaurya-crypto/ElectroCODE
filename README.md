@@ -2,7 +2,7 @@
 
 <img src="https://img.shields.io/badge/ElectroAI-IDE-blue?style=for-the-badge&logo=electron&logoColor=white" alt="ElectroAI IDE" />
 
-# ⚡ ElectroAI IDE
+# ⚡ ElectroCODE IDE
 
 ### AI-Powered Desktop IDE for Embedded Systems Development
 
