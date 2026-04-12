@@ -71,8 +71,8 @@ Built with **Electron + React + TypeScript**, it brings the familiarity of moder
 | **Arduino Uno / Nano / Mega** | C / C++ | ✅ Supported |
 | **ESP32 / ESP8266** | C / C++ / MicroPython | ✅ Supported |
 | **Raspberry Pi Pico / Pico W** | MicroPython / CircuitPython | ✅ Supported |
-| **STM32** | C / C++ | 🔄 Coming Soon |
-| **AVR (bare-metal)** | C / Assembly | 🔄 Coming Soon |
+| **STM32** | C / C++ | ✅ Supported |
+| **AVR (bare-metal)** | C / Assembly | ✅ Supported |
 
 > More microcontrollers will be added in future releases. Community contributions are welcome!
 
