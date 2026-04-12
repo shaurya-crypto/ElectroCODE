@@ -42,6 +42,7 @@ contextBridge.exposeInMainWorld("electronAPI", {
   fsRename: (args) => ipcRenderer.invoke("fs:rename", args),
   // API Config
   saveApiSettings: (config) => ipcRenderer.invoke("saveApiSettings", config),
+  loadApiSettings: () => ipcRenderer.invoke("loadApiSettings"),
   // Device File System (chip files)
   listFiles: (args) => ipcRenderer.invoke("hardware:listFiles", args),
   readFile: (args) => ipcRenderer.invoke("hardware:readFile", args),

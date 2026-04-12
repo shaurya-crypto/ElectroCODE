@@ -4,10 +4,20 @@ const os = require("os");
 const dotenv = require("dotenv");
 
 function loadConfig() {
-  const LOCAL_APP_DATA = process.env.LOCALAPPDATA || path.join(os.homedir(), "AppData", "Local");
-  const envPath = path.join(LOCAL_APP_DATA, "ElectroAI", ".env");
+  const isWin = process.platform === "win32";
+  const userDataPath = isWin 
+    ? path.join(process.env.APPDATA || "", "ElectroAI")
+    : path.join(os.homedir(), ".config", "ElectroAI");
+    
+  const settingsPath = path.join(userDataPath, "config", "settings.json");
   
-  if (!fs.existsSync(envPath)) {
+  if (!fs.existsSync(settingsPath)) {
+    // Check old .env for migration or defaults
+    const oldEnvPath = path.join(userDataPath, ".env");
+    if (fs.existsSync(oldEnvPath)) {
+       // Manual parse or just return defaults for now
+    }
+
     return {
       provider: "ollama",
       apiKey: "",
@@ -16,15 +26,24 @@ function loadConfig() {
     };
   }
 
-  // Live reload: read directly from disk bypassing Node's cache
-  const env = dotenv.parse(fs.readFileSync(envPath));
-  
-  return {
-    provider: env.ACTIVE_PROVIDER || "ollama",
-    apiKey: env.API_KEY || "",
-    model: env.MODEL || "",
-    baseUrl: env.BASE_URL || "" // Used primarily by ollama
-  };
+  try {
+    const content = fs.readFileSync(settingsPath, "utf-8");
+    const json = JSON.parse(content);
+    
+    return {
+      provider: json.provider || "ollama",
+      apiKey: json.apiKey || "", // Note: might be encrypted "enc:..."
+      model: json.model || "",
+      baseUrl: json.baseUrl || ""
+    };
+  } catch (e) {
+    return {
+      provider: "ollama",
+      apiKey: "",
+      model: "llama3.1",
+      baseUrl: "http://localhost:11434"
+    };
+  }
 }
 
 module.exports = { loadConfig };

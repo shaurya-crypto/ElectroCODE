@@ -254,6 +254,7 @@ interface AppStore {
   apiConfig: APIConfig | null;
   completeSetup: (config: APIConfig) => void;
   updateAPIConfig: (config: APIConfig) => void;
+  loadAPIConfig: () => Promise<void>;
 
   // Theme
   theme: Theme;
@@ -390,9 +391,20 @@ export const useAppStore = create<AppStore>()(
       // Setup
       setupComplete: false,
       apiConfig: null,
-      completeSetup: (config) =>
-        set({ setupComplete: true, apiConfig: config }),
-      updateAPIConfig: (config) => set({ apiConfig: config }),
+      completeSetup: async (config) => {
+        set({ setupComplete: true, apiConfig: config });
+        await (window as any).electronAPI.saveApiSettings(config);
+      },
+      updateAPIConfig: async (config) => {
+        set({ apiConfig: config });
+        await (window as any).electronAPI.saveApiSettings(config);
+      },
+      loadAPIConfig: async () => {
+        const config = await (window as any).electronAPI.loadApiSettings();
+        if (config) {
+          set({ apiConfig: config, setupComplete: true });
+        }
+      },
 
       // Theme
       theme: "dark",
@@ -1068,7 +1080,7 @@ export const useAppStore = create<AppStore>()(
       name: "electrocode-storage",
       partialize: (s) => ({
         setupComplete: s.setupComplete,
-        apiConfig: s.apiConfig,
+        // apiConfig excluded: now loaded from secure main-process JSON
         theme: s.theme,
         autoSave: s.autoSave,
         sidebarWidth: s.sidebarWidth,
@@ -1081,6 +1093,10 @@ export const useAppStore = create<AppStore>()(
         conversations: s.conversations,
         currentConversationId: s.currentConversationId,
       }),
+      onRehydrateStorage: (state) => {
+        // Automatically fetch secure settings on app start
+        state?.loadAPIConfig();
+      }
     },
   ),
 );

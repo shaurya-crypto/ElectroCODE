@@ -218,23 +218,28 @@ export default function AIPanel() {
     const workspacePath = useAppStore.getState().openedFolderPath;
 
     try {
-      const res = await fetch('http://localhost:4000/api/v1/ai/generate', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          prompt: text,
-          intent: 'user_prompt',
-          sessionId: currentSessionId,
-          apiConfig: apiConfig,
-          workspacePath: workspacePath
-        }),
-      })
+      // Use the secure proxy in the Main process
+      const response = await (window as any).electronAPI.generateCode({
+        userPrompt: text,
+        sessionId: currentSessionId,
+        workspacePath: workspacePath,
+        mode: 'code'
+      });
 
-      const json = await res.json()
-      if (!json.success || !json.data) throw new Error(json.error || 'MCP generation failed')
+      if (response.error) {
+         throw new Error(response.error.message || 'AI Generation failed');
+      }
 
-      const data = json.data;
-      if (data.type === 'code_update') {
+      if (!response.success || !response.response_text) {
+        throw new Error('Invalid response from AI service');
+      }
+
+      // In the new proxied flow, response_text is the direct result from aiClient.generate
+      const data = response.response_text;
+      
+      if (typeof data === 'string') {
+        addAiMessage({ role: 'assistant', content: data });
+      } else if (data.type === 'code_update') {
         const reply = data.explanation || 'I have generated code. Review it in your editor.'
         addAiMessage({ role: 'assistant', content: reply })
         
@@ -246,14 +251,14 @@ export default function AIPanel() {
               prompt: text
             })
         } else {
-            addAiMessage({ role: 'assistant', content: '> ⚠️ The AI provided an explanation but failed to generate the actual code block. Try asking it to "write the full script" explicitly.'})
+            addAiMessage({ role: 'assistant', content: '> ⚠️ The AI provided an explanation but failed to generate the actual code block.'})
         }
       } else {
-        const reply = data.payload || 'No payload in response'
+        const reply = data.payload || data.response_text || 'Completed.'
         addAiMessage({ role: 'assistant', content: reply })
       }
-    } catch {
-      addAiMessage({ role: 'assistant', content: 'Error: Could not reach AI service. Check your API key in Tools > Settings.' })
+    } catch (err: any) {
+      addAiMessage({ role: 'assistant', content: `Error: ${err.message || 'Could not reach AI service.'}` })
     } finally {
       setAiLoading(false)
     }

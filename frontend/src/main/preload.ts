@@ -50,6 +50,7 @@ contextBridge.exposeInMainWorld("electronAPI", {
 
   // API Config
   saveApiSettings: (config: any) => ipcRenderer.invoke("saveApiSettings", config),
+  loadApiSettings: () => ipcRenderer.invoke("loadApiSettings"),
 
   // Device File System (chip files)
   listFiles: (args: any) => ipcRenderer.invoke("hardware:listFiles", args),
