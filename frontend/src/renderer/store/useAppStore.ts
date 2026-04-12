@@ -275,6 +275,10 @@ interface AppStore {
   setSettingsOpen: (v: boolean) => void;
   interpreterModalOpen: boolean;
   setInterpreterModalOpen: (v: boolean) => void;
+  firmwareModalOpen: boolean;
+  firmwareModalFamily: 'micropython' | 'circuitpython' | 'arduino' | null;
+  openFirmwareModal: (family: 'micropython' | 'circuitpython' | 'arduino') => void;
+  closeFirmwareModal: () => void;
 
   // Device / Interpreter
   interpreter: Interpreter | null;
@@ -290,8 +294,9 @@ interface AppStore {
   isScanning: boolean;
   setScanning: (v: boolean) => void;
   isDeviceBusy: boolean;
+  isSilentBusy: boolean;
   busyReason: string;
-  lockDevice: (reason: string) => boolean;
+  lockDevice: (reason: string, silent?: boolean) => boolean;
   unlockDevice: () => void;
 
   // Tabs / Editor
@@ -430,6 +435,10 @@ export const useAppStore = create<AppStore>()(
       setSettingsOpen: (v) => set({ settingsOpen: v }),
       interpreterModalOpen: false,
       setInterpreterModalOpen: (v) => set({ interpreterModalOpen: v }),
+      firmwareModalOpen: false,
+      firmwareModalFamily: null,
+      openFirmwareModal: (family) => set({ firmwareModalOpen: true, firmwareModalFamily: family }),
+      closeFirmwareModal: () => set({ firmwareModalOpen: false, firmwareModalFamily: null }),
 
       // Device
       interpreter: null,
@@ -462,17 +471,20 @@ export const useAppStore = create<AppStore>()(
       isFlashing: false, // Legacy, use isDeviceBusy for logic check
       setIsFlashing: (v) => set({ isFlashing: v }),
       isDeviceBusy: false,
+      isSilentBusy: false,
       busyReason: "",
-      lockDevice: (reason) => {
+      lockDevice: (reason, silent = false) => {
         const { isDeviceBusy, busyReason, showNotification } = get();
         if (isDeviceBusy) {
-          showNotification(`Device is busy: ${busyReason}`, "warning");
+          if (!silent) {
+            showNotification(`Device is busy: ${busyReason}`, "warning");
+          }
           return false;
         }
-        set({ isDeviceBusy: true, busyReason: reason });
+        set({ isDeviceBusy: true, isSilentBusy: silent, busyReason: reason });
         return true;
       },
-      unlockDevice: () => set({ isDeviceBusy: false, busyReason: "" }),
+      unlockDevice: () => set({ isDeviceBusy: false, isSilentBusy: false, busyReason: "" }),
 
       // Error overlay
       errorOverlay: null,
@@ -532,7 +544,17 @@ export const useAppStore = create<AppStore>()(
             // Save to chip via serial
             const port = get().selectedPort;
             if (!port) return;
-            if (!get().lockDevice(`Saving ${tab.name}`)) return;
+            if (!get().lockDevice(`Saving ${tab.name}`, silent)) {
+              if (silent) {
+                // If silent auto-save and device busy, reschedule save
+                const win = window as any;
+                clearTimeout(win._autoSaveTimers[id]);
+                win._autoSaveTimers[id] = setTimeout(() => {
+                  get().saveTab(id, true);
+                }, 1000);
+              }
+              return;
+            }
 
             try {
               await win.electronAPI?.stopMonitor?.();
@@ -925,7 +947,7 @@ export const useAppStore = create<AppStore>()(
         const state = get();
         const {
           isConnected, activeTabId, tabs, selectedPort, interpreter,
-          activeTerminalId, isFlashing, showNotification,
+          activeTerminalId, showNotification,
           addTerminalLine, clearTerminal, setTerminalOpen, setIsFlashing
         } = state;
 
@@ -935,7 +957,14 @@ export const useAppStore = create<AppStore>()(
         }
 
         const activeTab = tabs.find((t) => t.id === activeTabId);
-        if (!activeTab || isFlashing) return;
+        if (!activeTab) return;
+
+        // Auto-stop if already running
+        if (state.isFlashing) {
+          await state.stopExecution();
+          // yield an event loop tick to let UI and state update
+          await new Promise(r => setTimeout(r, 100));
+        }
 
         clearTerminal(activeTerminalId);
         setTerminalOpen(true);

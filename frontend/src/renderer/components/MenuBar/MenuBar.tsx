@@ -171,10 +171,6 @@ useEffect(() => {
     { label: `Save to ${interpreter?.chip ?? 'Device'}...`, disabled: !isConnected, action: async () => {
       const state = useAppStore.getState()
       if (!state.activeTabId) return
-      if (state.isFlashing) {
-        state.showNotification('Upload already in progress...', 'warning')
-        return
-      }
       await state.saveToDevice()
     }},
     { separator: true },
@@ -226,35 +222,32 @@ useEffect(() => {
     { label: 'Upload to Device',  shortcut: 'F7', disabled: !isConnected, action: async () => {
       const state = useAppStore.getState()
       if (!state.activeTabId) return
-      if (state.isFlashing) {
-        state.showNotification('Upload already in progress...', 'warning')
-        return
-      }
       await state.saveToDevice()
     }},
     { separator: true },
-    { label: 'Flash Firmware...', disabled: !interpreter, action: () => {
-      showNotification('Flash firmware: connect firmware-tools', 'info')
+    { label: 'Flash Firmware...', action: () => {
+      useAppStore.getState().openFirmwareModal(interpreter?.language === 'circuitpython' ? 'circuitpython' : 'micropython')
     }},
     { label: 'Open REPL',         disabled: !isConnected, action: async () => {
       addTerminalLine(activeTerminalId, 'Connecting to REPL...')
       setTerminalOpen(true)
-      await window.ipcRenderer.invoke('hardware:stopMonitor')
-      await window.ipcRenderer.invoke('hardware:startMonitor', { port: selectedPort })
+      await (window as any).electronAPI.stopMonitor()
+      await (window as any).electronAPI.startMonitor({ port: selectedPort })
+      addTerminalLine(activeTerminalId, '>>> ')
     }},
   ]
 
   const toolsMenu: MenuEntry[] = [
     { label: 'Select Interpreter...', action: () => setInterpreterModalOpen(true) },
     { separator: true },
-    { label: 'Install MicroPython...',  disabled: !interpreter, action: () => {
-      showNotification('Install firmware: connect firmware-tools', 'info')
+    { label: 'Install MicroPython...',  action: () => {
+      useAppStore.getState().openFirmwareModal('micropython')
     }},
-    { label: 'Install CircuitPython...', disabled: !interpreter, action: () => {
-      showNotification('Install firmware: connect firmware-tools', 'info')
+    { label: 'Install CircuitPython...', action: () => {
+      useAppStore.getState().openFirmwareModal('circuitpython')
     }},
-    { label: 'Install Arduino Core...', disabled: !interpreter, action: () => {
-      showNotification('Install core: connect firmware-tools', 'info')
+    { label: 'Install Arduino Core...', action: () => {
+      useAppStore.getState().openFirmwareModal('arduino')
     }},
     { separator: true },
     { label: 'Package Manager (pip)...', disabled: !isConnected, action: () => {
@@ -270,14 +263,14 @@ useEffect(() => {
   ]
 
   const helpMenu: MenuEntry[] = [
-    { label: 'Documentation',        action: () => window.open('https://docs.micropython.org/', '_blank') },
-    { label: 'MicroPython Reference', action: () => window.open('https://docs.micropython.org/', '_blank') },
-    { label: 'Arduino Reference',    action: () => window.open('https://www.arduino.cc/reference/en/', '_blank') },
+    { label: 'Documentation',        action: () => (window as any).electronAPI.openExternal('https://docs.micropython.org/') },
+    { label: 'MicroPython Reference', action: () => (window as any).electronAPI.openExternal('https://docs.micropython.org/en/latest/') },
+    { label: 'Arduino Reference',    action: () => (window as any).electronAPI.openExternal('https://www.arduino.cc/reference/en/') },
     { separator: true },
-    { label: 'Report Issue',         action: () => window.open('https://github.com', '_blank') },
+    { label: 'Report Issue',         action: () => (window as any).electronAPI.openExternal('https://github.com/shaurya-crypto/ElectroCODE/issues') },
     { label: 'Check for Updates',    action: () => { showNotification('Up to date', 'success') }},
     { separator: true },
-    { label: 'About Electro CODE',   action: () => showNotification('Electro CODE v1.0.0 - AI-powered embedded IDE', 'info') },
+    { label: 'About Electro CODE',   action: () => (window as any).electronAPI.openExternal('https://github.com/shaurya-crypto/ElectroCODE') },
   ]
 
   const menus: { name: string; items: MenuEntry[] }[] = [

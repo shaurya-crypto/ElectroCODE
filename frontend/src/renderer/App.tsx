@@ -21,7 +21,7 @@ export default function App() {
         openFolder(openedFolderPath);
       }
 
-      // Stagger device connection to avoid startup port contention
+      // Stagger device connection — give 5 seconds for device to settle after app launch
       setTimeout(async () => {
         const currentStore = useAppStore.getState();
         if (currentStore.selectedPort && currentStore.interpreter) {
@@ -34,17 +34,44 @@ export default function App() {
             if (check && check.connected) {
               setConnected(true);
               showNotification(`Resumed session: ${currentStore.interpreter.label} on ${currentStore.selectedPort}`, 'info');
+
+              // Auto-fetch device files after successful connection
+              setTimeout(async () => {
+                try {
+                  const store = useAppStore.getState();
+                  if (store.isConnected && store.fetchDeviceFiles) {
+                    console.log('[Auto-Init] Fetching device files...');
+                    await store.fetchDeviceFiles();
+                  }
+                } catch (e) {
+                  console.warn('[Auto-Init] Could not fetch device files:', e);
+                }
+              }, 1500);
+
+              // Auto-start serial monitor for REPL
+              setTimeout(async () => {
+                try {
+                  const store = useAppStore.getState();
+                  if (store.isConnected && store.selectedPort) {
+                    console.log('[Auto-Init] Starting serial monitor...');
+                    await (window as any).electronAPI.startMonitor({ port: store.selectedPort });
+                  }
+                } catch (e) {
+                  console.warn('[Auto-Init] Could not start monitor:', e);
+                }
+              }, 3500);
             } else {
               setConnected(false);
-              currentStore.showErrorOverlay(check?.message ?? `Port ${currentStore.selectedPort} is busy or disconnected.`);
+              currentStore.showErrorOverlay(check?.message ?? `Port ${currentStore.selectedPort} is busy or disconnected.`)
               console.warn(`[Auto-Init] Port ${currentStore.selectedPort} busy or disconnected.`);
             }
           } catch (e: any) {
             setConnected(false);
             currentStore.showErrorOverlay(`Fatal Error: ${e.message}`);
+            console.warn(`[Auto-Init] Connection check failed: ${e.message}`);
           }
         }
-      }, 2000);
+      }, 5000);
     }
   }, [])
 

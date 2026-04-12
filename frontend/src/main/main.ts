@@ -1,9 +1,11 @@
-import { app, BrowserWindow, ipcMain, dialog, safeStorage } from "electron";
+import { app, BrowserWindow, ipcMain, dialog, safeStorage, shell } from "electron";
 import { fileURLToPath } from "node:url";
 import path from "node:path";
 import { exec, execSync, spawn, execFile, ChildProcess } from "node:child_process";
-import fs from "node:fs"; // <-- ADD THIS
-import os from "node:os"; // <-- ADD THIS
+import fs from "node:fs";
+import os from "node:os";
+import http from "node:http";
+import https from "node:https";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -838,29 +840,56 @@ if not success:
       const decryptedKey = decryptValue(config.apiKey);
       
       // 2. Forward request to MCP Server which handles context composition
-      const mcpUrl = "http://127.0.0.1:4000/api/v1/ai/generate";
-      
-      const response = await fetch(mcpUrl, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          ...payload, // prompt, sessionId, etc.
-          apiConfig: {
-            ...config,
-            apiKey: decryptedKey
-          }
-        })
+      //    IMPORTANT: Use Node.js native http.request, NOT fetch.
+      //    Electron's production build routes `fetch` through Chromium's net
+      //    stack, which can silently fail on localhost connections.
+      const requestBody = JSON.stringify({
+        ...payload,
+        apiConfig: {
+          ...config,
+          apiKey: decryptedKey
+        }
       });
 
-      if (!response.ok) {
-        const errData = await response.json().catch(() => ({}));
-        throw new Error(errData.error || `MCP Server error: ${response.status}`);
-      }
+      const result: any = await new Promise((resolve, reject) => {
+        const req = http.request(
+          {
+            hostname: "127.0.0.1",
+            port: 4000,
+            path: "/api/v1/ai/generate",
+            method: "POST",
+            headers: {
+              "Content-Type": "application/json",
+              "Content-Length": Buffer.byteLength(requestBody),
+            },
+          },
+          (res: any) => {
+            let body = "";
+            res.on("data", (chunk: any) => (body += chunk));
+            res.on("end", () => {
+              try {
+                const json = JSON.parse(body);
+                if (res.statusCode >= 200 && res.statusCode < 300) {
+                  resolve(json);
+                } else {
+                  reject(new Error(json.error || `MCP Server error: ${res.statusCode}`));
+                }
+              } catch {
+                reject(new Error(`MCP Server returned invalid JSON (status ${res.statusCode})`));
+              }
+            });
+          }
+        );
 
-      const result = await response.json();
-      
+        req.on("error", (err: any) => {
+          reject(new Error(`Cannot reach MCP Server: ${err.message}. Is it running?`));
+        });
+
+        req.write(requestBody);
+        req.end();
+      });
+
       // The result from MCP server is { success: true, data: { ... } }
-      // We return a structure that AIPanel expects
       return {
         success: true,
         response_text: result.data
@@ -884,6 +913,255 @@ if not success:
   });
   ipcMain.handle("window:close", () => {
     win?.close();
+  });
+
+  // 10. Terminal REPL Input — write to the serial monitor's stdin
+  ipcMain.handle("terminal:sendInput", async (_, data: string) => {
+    if (monitorProcess && monitorProcess.stdin) {
+      try {
+        monitorProcess.stdin.write(data);
+        return { success: true };
+      } catch (e: any) {
+        return { success: false, message: e.message };
+      }
+    }
+    return { success: false, message: "No active serial monitor" };
+  });
+
+  // 11. Firmware - List mounted volumes (for UF2 bootloader detection)
+  ipcMain.handle("firmware:listVolumes", async () => {
+    try {
+      if (process.platform === "win32") {
+        // Use WMIC to list removable drives
+        return new Promise((resolve) => {
+          exec('wmic logicaldisk where "DriveType=2" get DeviceID,VolumeName /format:csv', (err, stdout) => {
+            if (err) { resolve([]); return; }
+            const lines = stdout.trim().split('\n').filter(l => l.includes(','));
+            // Skip header
+            const volumes = lines.slice(1).map(line => {
+              const parts = line.trim().split(',');
+              // CSV format: Node,DeviceID,VolumeName
+              const deviceId = parts[1] || '';
+              const name = parts[2] || 'Removable Disk';
+              return { path: deviceId + '\\', label: `${name} (${deviceId})` };
+            }).filter(v => v.path.length > 1);
+            resolve(volumes);
+          });
+        });
+      } else if (process.platform === "darwin") {
+        const volDir = '/Volumes';
+        if (!fs.existsSync(volDir)) return [];
+        const entries = fs.readdirSync(volDir);
+        return entries.map(name => ({
+          path: path.join(volDir, name),
+          label: name,
+        }));
+      } else {
+        // Linux: check /media/<user> and /run/media/<user>
+        const user = os.userInfo().username;
+        const dirs = [`/media/${user}`, `/run/media/${user}`];
+        const volumes: { path: string; label: string }[] = [];
+        for (const dir of dirs) {
+          if (fs.existsSync(dir)) {
+            for (const name of fs.readdirSync(dir)) {
+              volumes.push({ path: path.join(dir, name), label: name });
+            }
+          }
+        }
+        return volumes;
+      }
+    } catch {
+      return [];
+    }
+  });
+
+  // 12. Firmware - Install (copy UF2/BIN file to target volume with real progress)
+  ipcMain.handle("firmware:install", async (_, { sourcePath, targetVolume }) => {
+    try {
+      if (!fs.existsSync(sourcePath)) {
+        return { success: false, message: "Firmware file not found: " + sourcePath };
+      }
+
+      const fileName = path.basename(sourcePath);
+      const destPath = path.join(targetVolume, fileName);
+      const stat = fs.statSync(sourcePath);
+      const totalBytes = stat.size;
+
+      if (totalBytes === 0) {
+        return { success: false, message: "Firmware file is empty" };
+      }
+
+      // Stream-copy with real progress events
+      const readStream = fs.createReadStream(sourcePath);
+      const writeStream = fs.createWriteStream(destPath);
+      let copiedBytes = 0;
+
+      readStream.on('data', (chunk: any) => {
+        copiedBytes += chunk.length;
+        const percent = Math.round((copiedBytes / totalBytes) * 100);
+        if (win) {
+          win.webContents.send('firmware-progress', {
+            percent,
+            message: `Copying ${fileName}... ${percent}%`,
+          });
+        }
+      });
+
+      return new Promise((resolve) => {
+        writeStream.on('finish', () => {
+          if (win) {
+            win.webContents.send('firmware-progress', {
+              percent: 100,
+              message: 'Firmware installed successfully!',
+              done: true,
+            });
+          }
+          resolve({ success: true });
+        });
+
+        writeStream.on('error', (err) => {
+          if (win) {
+            win.webContents.send('firmware-progress', {
+              percent: 0,
+              message: err.message,
+              error: err.message,
+            });
+          }
+          resolve({ success: false, message: err.message });
+        });
+
+        readStream.on('error', (err) => {
+          if (win) {
+            win.webContents.send('firmware-progress', {
+              percent: 0,
+              message: err.message,
+              error: err.message,
+            });
+          }
+          resolve({ success: false, message: err.message });
+        });
+
+        readStream.pipe(writeStream);
+      });
+    } catch (e: any) {
+      return { success: false, message: e.message };
+    }
+  });
+
+  // 13. Shell - Open external URL in default browser
+  ipcMain.handle("shell:openExternal", async (_, url: string) => {
+    try {
+      await shell.openExternal(url);
+      return { success: true };
+    } catch (e: any) {
+      return { success: false, message: e.message };
+    }
+  });
+
+  // 14. Firmware - Download firmware from URL with progress
+  ipcMain.handle("firmware:download", async (_, { url, fileName }) => {
+    try {
+      const cacheDir = path.join(app.getPath("userData"), "firmware-cache");
+      if (!fs.existsSync(cacheDir)) {
+        fs.mkdirSync(cacheDir, { recursive: true });
+      }
+
+      const destPath = path.join(cacheDir, fileName);
+
+      // Check cache — if file already exists and is > 0 bytes, skip download
+      if (fs.existsSync(destPath) && fs.statSync(destPath).size > 0) {
+        console.log(`[Firmware] Using cached: ${destPath}`);
+        if (win) {
+          win.webContents.send("firmware-progress", {
+            percent: 100,
+            message: "Using cached firmware file...",
+          });
+        }
+        return { success: true, filePath: destPath };
+      }
+
+      // Download with progress using native https (works in production)
+      return new Promise((resolve) => {
+        const doDownload = (downloadUrl: string, redirectCount = 0) => {
+          if (redirectCount > 5) {
+            resolve({ success: false, message: "Too many redirects" });
+            return;
+          }
+
+          const httpModule = downloadUrl.startsWith("https") ? https : http;
+          httpModule.get(downloadUrl, (res: any) => {
+            // Handle redirects (301, 302, 303, 307, 308)
+            if (res.statusCode >= 300 && res.statusCode < 400 && res.headers.location) {
+              const redirectUrl = res.headers.location;
+              const redirectModule = redirectUrl.startsWith("https") ? https : http;
+              // Use the redirect module for the new URL
+              redirectModule.get(redirectUrl, (res2: any) => {
+                if (res2.statusCode >= 300 && res2.statusCode < 400 && res2.headers.location) {
+                  doDownload(res2.headers.location, redirectCount + 2);
+                  return;
+                }
+                handleResponse(res2);
+              }).on("error", (err: any) => {
+                resolve({ success: false, message: `Download failed: ${err.message}` });
+              });
+              return;
+            }
+
+            handleResponse(res);
+          }).on("error", (err: any) => {
+            resolve({ success: false, message: `Download failed: ${err.message}` });
+          });
+        };
+
+        const handleResponse = (res: any) => {
+          if (res.statusCode !== 200) {
+            resolve({ success: false, message: `Server returned ${res.statusCode}` });
+            return;
+          }
+
+          const totalBytes = parseInt(res.headers["content-length"] || "0", 10);
+          let downloadedBytes = 0;
+          const fileStream = fs.createWriteStream(destPath);
+
+          res.on("data", (chunk: any) => {
+            downloadedBytes += chunk.length;
+            if (totalBytes > 0) {
+              const percent = Math.round((downloadedBytes / totalBytes) * 100);
+              if (win) {
+                win.webContents.send("firmware-progress", {
+                  percent,
+                  message: `Downloading ${fileName}... ${(downloadedBytes / 1024 / 1024).toFixed(1)} MB`,
+                });
+              }
+            } else {
+              if (win) {
+                win.webContents.send("firmware-progress", {
+                  percent: -1,
+                  message: `Downloading ${fileName}... ${(downloadedBytes / 1024 / 1024).toFixed(1)} MB`,
+                });
+              }
+            }
+          });
+
+          res.pipe(fileStream);
+
+          fileStream.on("finish", () => {
+            fileStream.close();
+            console.log(`[Firmware] Downloaded: ${destPath}`);
+            resolve({ success: true, filePath: destPath });
+          });
+
+          fileStream.on("error", (err: any) => {
+            fs.unlinkSync(destPath); // Clean up partial file
+            resolve({ success: false, message: err.message });
+          });
+        };
+
+        doDownload(url);
+      });
+    } catch (e: any) {
+      return { success: false, message: e.message };
+    }
   });
 }
 

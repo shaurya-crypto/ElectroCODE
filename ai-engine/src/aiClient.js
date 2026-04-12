@@ -1,5 +1,43 @@
 const { loadConfig } = require("./config");
+const https = require("https");
+const http = require("http");
 
+if (!global.fetchPolyfilled) {
+  global.fetch = function (url, options = {}) {
+    return new Promise((resolve, reject) => {
+      const parsedUrl = new URL(url);
+      const reqModule = parsedUrl.protocol === "http:" ? http : https;
+
+      const req = reqModule.request(
+        url,
+        {
+          method: options.method || "GET",
+          headers: options.headers || {},
+        },
+        (res) => {
+          let body = "";
+          res.on("data", (chunk) => (body += chunk));
+          res.on("end", () => {
+            resolve({
+              ok: res.statusCode >= 200 && res.statusCode < 300,
+              status: res.statusCode,
+              text: async () => body,
+              json: async () => JSON.parse(body),
+            });
+          });
+        }
+      );
+
+      req.on("error", reject);
+
+      if (options.body) {
+        req.write(options.body);
+      }
+      req.end();
+    });
+  };
+  global.fetchPolyfilled = true;
+}
 // Load raw HTTP drivers
 const anthropicProvider = require("./providers/anthropic");
 const openaiProvider = require("./providers/openai");

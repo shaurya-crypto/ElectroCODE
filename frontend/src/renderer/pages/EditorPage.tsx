@@ -13,6 +13,7 @@ import SettingsPanel from '../components/Settings/SettingsPanel'
 import InterpreterModal from '../components/Setup/InterpreterModal'
 import DeviceBusyOverlay from '../components/DeviceBusyOverlay'
 import ErrorOverlay from '../components/ErrorOverlay'
+import FirmwareInstallerModal from '../components/MenuBar/FirmwareInstallerModal'
 export default function EditorPage() {
   const {
     sidebarView, setSidebarView, sidebarWidth, setSidebarWidth,
@@ -26,7 +27,8 @@ export default function EditorPage() {
     notification, clearNotification,
     newUntitledTab, saveTab,
     promptConfig, resolvePrompt,
-    isDeviceBusy, busyReason
+    isDeviceBusy, busyReason,
+    firmwareModalOpen
   } = useAppStore()
 
   // Internal Prompt State
@@ -302,6 +304,7 @@ export default function EditorPage() {
       {/* ── Overlays ── */}
       <DeviceBusyOverlay />
       <ErrorOverlay />
+      {firmwareModalOpen && <FirmwareInstallerModal />}
       {settingsOpen && <SettingsPanel />}
       {interpreterModalOpen && <InterpreterModal />}
 

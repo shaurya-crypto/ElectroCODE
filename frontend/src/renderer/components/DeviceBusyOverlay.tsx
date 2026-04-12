@@ -2,9 +2,9 @@ import { Loader2 } from 'lucide-react';
 import { useAppStore } from '../store/useAppStore';
 
 export default function DeviceBusyOverlay() {
-  const { isDeviceBusy, busyReason } = useAppStore();
+  const { isDeviceBusy, isSilentBusy, busyReason } = useAppStore();
 
-  if (!isDeviceBusy) return null;
+  if (!isDeviceBusy || isSilentBusy) return null;
 
   return (
     <div

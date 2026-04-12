@@ -73,4 +73,20 @@ contextBridge.exposeInMainWorld("electronAPI", {
     ipcRenderer.on("terminal-output", handler);
     return () => ipcRenderer.off("terminal-output", handler);
   },
+
+  // Terminal REPL input — send keystrokes to device
+  sendTerminalInput: (data: string) => ipcRenderer.invoke("terminal:sendInput", data),
+
+  // Firmware installation
+  listVolumes: () => ipcRenderer.invoke("firmware:listVolumes"),
+  installFirmware: (args: any) => ipcRenderer.invoke("firmware:install", args),
+  downloadFirmware: (args: any) => ipcRenderer.invoke("firmware:download", args),
+  onFirmwareProgress: (cb: (data: { percent: number; message: string; done?: boolean; error?: string }) => void) => {
+    const handler = (_: any, data: any) => cb(data);
+    ipcRenderer.on("firmware-progress", handler);
+    return () => ipcRenderer.off("firmware-progress", handler);
+  },
+
+  // Shell
+  openExternal: (url: string) => ipcRenderer.invoke("shell:openExternal", url),
 });

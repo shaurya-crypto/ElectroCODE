@@ -180,12 +180,9 @@ export default function TerminalPanel() {
       return
     }
 
-    // ── Everything else gets forwarded to the backend serial bridge ─────────
-    // The backend should respond by pushing lines back through the store.
-    // Here we emit a stub response so the UI stays responsive.
-    // Replace this block with your actual IPC / WebSocket send:
-    //   window.electronAPI.sendCommand(cmd)   ← your bridge call
-    addTerminalLine(activeTerminalId, '>>>')
+    // ── Everything else gets forwarded to the device via the serial bridge ──
+    // Send command + newline to the device's REPL stdin
+    ;(window as any).electronAPI.sendTerminalInput(cmd + '\r\n')
   }, [activeTerminalId, addTerminalLine, clearTerminal])
 
   // ── Keyboard handler — matches Thonny's Shell key bindings exactly ──────────
@@ -193,15 +190,10 @@ export default function TerminalPanel() {
     // Ctrl+C — interrupt (KeyboardInterrupt)
     if (e.ctrlKey && e.key === 'c') {
       e.preventDefault()
-      addTerminalLine(activeTerminalId, `>>> ${inputVal}`)
-      addTerminalLine(activeTerminalId, 'Traceback (most recent call last):')
-      addTerminalLine(activeTerminalId, '  ...')
-      addTerminalLine(activeTerminalId, 'KeyboardInterrupt: ')
-      addTerminalLine(activeTerminalId, '>>>')
       setInputVal('')
       setHistIdx(-1)
-      // Send actual CTRL+C byte 0x03 to device via your bridge:
-      // window.electronAPI.sendRaw('\x03')
+      // Send actual CTRL+C byte (0x03) to device
+      ;(window as any).electronAPI.sendTerminalInput('\x03')
       return
     }
 
@@ -209,11 +201,8 @@ export default function TerminalPanel() {
     if (e.ctrlKey && e.key === 'd') {
       e.preventDefault()
       if (inputVal === '') {
-        addTerminalLine(activeTerminalId, 'MPY: soft reboot')
-        addTerminalLine(activeTerminalId, 'MicroPython v1.23.0 on 2024-06-02; Raspberry Pi Pico with RP2040')
-        addTerminalLine(activeTerminalId, 'Type "help()" for more information.')
-        addTerminalLine(activeTerminalId, '>>>')
-        // window.electronAPI.sendRaw('\x04')
+        // Send actual CTRL+D byte (0x04) to device
+        ;(window as any).electronAPI.sendTerminalInput('\x04')
       }
       return
     }
