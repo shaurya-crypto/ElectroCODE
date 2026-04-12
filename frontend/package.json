@@ -62,12 +62,18 @@
         "to": "mcp-server",
         "filter": [
           "**/*",
+          "**/node_modules/**",
           "!**/node_modules/.cache"
         ]
       },
       {
         "from": "../ai-engine",
-        "to": "ai-engine"
+        "to": "ai-engine",
+        "filter": [
+          "**/*",
+          "**/node_modules/**",
+          "!**/node_modules/.cache"
+        ]
       },
       {
         "from": "../firmware-tools",

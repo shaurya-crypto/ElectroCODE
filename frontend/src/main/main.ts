@@ -448,6 +448,24 @@ except Exception as e:
       // Must cleanly stop monitor and send Ctrl+C to halt running scripts before flash/run!
       await stopMonitorNative();
 
+      // Ensure the device isn't stuck in an infinite loop holdout by brutally sending Ctrl+C
+      await new Promise((resolve) => {
+        const stopScript = `
+import serial, sys, time
+for attempt in range(5):
+    try:
+        s = serial.Serial('${port}', 115200, timeout=0.5)
+        s.write(b'\\r\\x03\\x03\\x03')  
+        time.sleep(0.2)
+        s.close()
+        break
+    except Exception:
+        time.sleep(0.2)
+`;
+        const ser = spawn(getPythonExe(), ["-c", stopScript]);
+        ser.on("close", resolve);
+      });
+
       return new Promise((resolve) => {
         const tempFilePath = path.join(os.tmpdir(), "electro_temp.py");
         try {
@@ -457,7 +475,7 @@ except Exception as e:
           return;
         }
 
-        // Wait for Windows to release COM port lock (stopMonitor already waited, wait an extra 1000ms)
+        // Wait a tiny bit for Windows to fully flush handles
         setTimeout(() => {
           const uploaderPath = getResourcePath(path.join("firmware-tools", "core", "uploader.py"));
 
@@ -491,12 +509,18 @@ except Exception as e:
             runProcess.stderr?.on("data", (data) => {
               if (win) win.webContents.send("terminal-output", data.toString("utf8"))
             });
-            runProcess.on("close", () => {
+            
+            runProcess.on("close", (code) => {
               if (monitorProcess === runProcess) monitorProcess = null;
+              if (code === 0 || code === null) {
+                resolve({ success: true, message: "Execution finished" });
+              } else {
+                resolve({ success: false, message: "" }); // errors are already streamed
+              }
             });
 
-            // Resolve immediately so the UI knows it started
-            resolve({ success: true, message: "Streaming live execution" });
+            // Do NOT resolve immediately. Keep the promise alive so the UI knows execution is ongoing.
+            // This enables the "Stop" button in the UI.
           } else {
             // Flash mode: wait for completion, then start monitor automatically
             execFile(
@@ -814,7 +838,7 @@ if not success:
       const decryptedKey = decryptValue(config.apiKey);
       
       // 2. Forward request to MCP Server which handles context composition
-      const mcpUrl = "http://localhost:4000/api/v1/ai/generate";
+      const mcpUrl = "http://127.0.0.1:4000/api/v1/ai/generate";
       
       const response = await fetch(mcpUrl, {
         method: 'POST',
@@ -871,19 +895,33 @@ function startMcpServer() {
     // Use the bundled Node.js executable provided by Electron!
     // This allows it to run even if Node.js isn't installed.
     mcpProcess = spawn(process.execPath, [mcpPath], {
+      cwd: path.dirname(path.dirname(mcpPath)),
       stdio: "pipe",
       env: { ...process.env, ELECTRON_RUN_AS_NODE: "1", PORT: "4000", WS_PORT: "4001" } 
     });
 
-    mcpProcess.stdout?.on("data", data => console.log(`[MCP] ${data}`));
-    mcpProcess.stderr?.on("data", data => console.error(`[MCP] ${data}`));
+    const mcpLogFile = path.join(app.getPath('userData'), 'mcp_debug.log');
+    fs.appendFileSync(mcpLogFile, `\n--- STARTING MCP SERVER at ${new Date().toISOString()} ---\n`);
+    fs.appendFileSync(mcpLogFile, `mcpPath: ${mcpPath}\ncwd: ${path.dirname(path.dirname(mcpPath))}\n`);
+
+    mcpProcess.stdout?.on("data", data => {
+      console.log(`[MCP] ${data}`);
+      fs.appendFileSync(mcpLogFile, `[STDOUT] ${data}`);
+    });
+    
+    mcpProcess.stderr?.on("data", data => {
+      console.error(`[MCP] ${data}`);
+      fs.appendFileSync(mcpLogFile, `[STDERR] ${data}`);
+    });
 
     mcpProcess.on("error", (err) => {
       console.error("[ElectroAI] Failed to start MCP Server:", err);
+      fs.appendFileSync(mcpLogFile, `[SPAWN ERROR] ${err.message}\n${err.stack}\n`);
     });
 
     mcpProcess.on("close", (code) => {
       console.log(`[ElectroAI] MCP Server exited with code ${code}`);
+      fs.appendFileSync(mcpLogFile, `[EXIT] Code ${code}\n`);
     });
   } else {
     console.warn(`[ElectroAI] MCP Server not found at ${mcpPath}`);

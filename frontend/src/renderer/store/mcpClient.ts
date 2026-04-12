@@ -15,7 +15,7 @@ const subscribers: Record<string, Subscriber[]> = {
 export function connectMcp() {
   if (socket?.readyState === WebSocket.OPEN || socket?.readyState === WebSocket.CONNECTING) return;
 
-  socket = new WebSocket("ws://localhost:4000");
+  socket = new WebSocket("ws://127.0.0.1:4000");
 
   socket.onopen = () => {
     console.log("Connected to MCP Server");
