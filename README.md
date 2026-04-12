@@ -1,6 +1,6 @@
 <div align="center">
 
-<img src="https://img.shields.io/badge/ElectroAI-IDE-blue?style=for-the-badge&logo=electron&logoColor=white" alt="ElectroAI IDE" />
+<img src="https://img.shields.io/badge/ElectroAI-IDE-blue?style=for-the-badge&logo=electron&logoColor=white" alt="ElectroCODE IDE" />
 
 # ⚡ ElectroCODE IDE
 
