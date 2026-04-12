@@ -44,5 +44,52 @@
     "vite-plugin-electron": "^0.28.6",
     "vite-plugin-electron-renderer": "^0.14.5"
   },
-  "main": "dist-electron/main.js"
+  "main": "dist-electron/main.js",
+  "build": {
+    "productName": "Electro CODE",
+    "appId": "com.electroai.electrocode",
+    "asar": true,
+    "directories": {
+      "output": "release"
+    },
+    "files": [
+      "dist",
+      "dist-electron"
+    ],
+    "extraResources": [
+      {
+        "from": "../mcp-server",
+        "to": "mcp-server",
+        "filter": [
+          "**/*",
+          "!**/node_modules/.cache"
+        ]
+      },
+      {
+        "from": "../ai-engine",
+        "to": "ai-engine"
+      },
+      {
+        "from": "../firmware-tools",
+        "to": "firmware-tools"
+      },
+      {
+        "from": "src/assets/icon.ico",
+        "to": "icon.ico"
+      }
+    ],
+    "win": {
+      "icon": "src/assets/icon.ico",
+      "target": [
+        "nsis"
+      ]
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true,
+      "shortcutName": "Electro CODE"
+    }
+  }
 }

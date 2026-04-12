@@ -1,317 +1,240 @@
-import { app, BrowserWindow, ipcMain, dialog, safeStorage } from "electron";
-import { fileURLToPath } from "node:url";
-import path from "node:path";
-import { exec, spawn, execFile, execSync } from "node:child_process";
-import fs from "node:fs";
-import os from "node:os";
-const __dirname$1 = path.dirname(fileURLToPath(import.meta.url));
-process.env.APP_ROOT = path.join(__dirname$1, "..");
-const VITE_DEV_SERVER_URL = process.env["VITE_DEV_SERVER_URL"];
-const MAIN_DIST = path.join(process.env.APP_ROOT, "dist-electron");
-const RENDERER_DIST = path.join(process.env.APP_ROOT, "dist");
-process.env.VITE_PUBLIC = VITE_DEV_SERVER_URL ? path.join(process.env.APP_ROOT, "public") : RENDERER_DIST;
-let win;
-let monitorProcess = null;
-let mcpProcess = null;
-const gotTheLock = app.requestSingleInstanceLock();
-if (!gotTheLock) {
-  app.quit();
+import { app as g, BrowserWindow as O, ipcMain as u, dialog as A, safeStorage as $ } from "electron";
+import { fileURLToPath as J } from "node:url";
+import a from "node:path";
+import { exec as F, spawn as _, execFile as b, execSync as T } from "node:child_process";
+import f from "node:fs";
+import C from "node:os";
+const D = a.dirname(J(import.meta.url));
+process.env.APP_ROOT = a.join(D, "..");
+const v = process.env.VITE_DEV_SERVER_URL, Z = a.join(process.env.APP_ROOT, "dist-electron"), R = a.join(process.env.APP_ROOT, "dist");
+process.env.VITE_PUBLIC = v ? a.join(process.env.APP_ROOT, "public") : R;
+let d, p = null, S = null;
+const M = g.requestSingleInstanceLock();
+M || g.quit();
+function w(i) {
+  return g.isPackaged ? a.join(process.resourcesPath, i) : a.join(process.env.APP_ROOT, "..", i);
 }
-function getResourcePath(subPath) {
-  const isDev = !!process.env.VITE_DEV_SERVER_URL;
-  if (isDev) {
-    return path.join(process.env.APP_ROOT, "..", subPath);
-  }
-  return path.join(process.resourcesPath, subPath);
-}
-function getPythonExe() {
+function y() {
   if (process.platform === "win32") {
-    const thonnyPath = path.join(os.homedir(), "AppData", "Local", "Programs", "Thonny", "python.exe");
-    if (fs.existsSync(thonnyPath)) {
-      return thonnyPath;
-    }
-    return "python";
+    const i = a.join(C.homedir(), "AppData", "Local", "Programs", "Thonny", "python.exe");
+    return f.existsSync(i) ? i : "python";
   }
   try {
-    execSync("python3 --version", { stdio: "ignore" });
-    return "python3";
+    return T("python3 --version", { stdio: "ignore" }), "python3";
   } catch {
     return "python";
   }
 }
-function encryptValue(value) {
-  if (!value) return "";
+function z(i) {
+  if (!i) return "";
   try {
-    if (safeStorage.isEncryptionAvailable()) {
-      const buffer = safeStorage.encryptString(value);
-      return `enc:${buffer.toString("base64")}`;
-    }
-    console.warn("[Security] safeStorage not available. Storing in plain-text.");
-    return value;
-  } catch (err) {
-    console.error("[Security] Encryption failed:", err);
-    return value;
+    return $.isEncryptionAvailable() ? `enc:${$.encryptString(i).toString("base64")}` : (console.warn("[Security] safeStorage not available. Storing in plain-text."), i);
+  } catch (r) {
+    return console.error("[Security] Encryption failed:", r), i;
   }
 }
-function decryptValue(value) {
-  if (!value || !value.startsWith("enc:")) return value;
+function k(i) {
+  if (!i || !i.startsWith("enc:")) return i;
   try {
-    if (safeStorage.isEncryptionAvailable()) {
-      const base64Content = value.substring(4);
-      const buffer = Buffer.from(base64Content, "base64");
-      return safeStorage.decryptString(buffer);
+    if ($.isEncryptionAvailable()) {
+      const r = i.substring(4), t = Buffer.from(r, "base64");
+      return $.decryptString(t);
     }
-    return value;
-  } catch (err) {
-    console.error("[Security] Decryption failed:", err);
-    return value;
+    return i;
+  } catch (r) {
+    return console.error("[Security] Decryption failed:", r), i;
   }
 }
-function createWindow() {
-  win = new BrowserWindow({
+function L() {
+  d = new O({
     width: 1200,
     height: 800,
     minWidth: 900,
     minHeight: 600,
-    frame: false,
+    frame: !1,
     // Frameless window
-    icon: path.join(process.env.VITE_PUBLIC, "electron-vite.svg"),
+    icon: g.isPackaged ? a.join(process.resourcesPath, "icon.ico") : a.join(process.env.VITE_PUBLIC, "icon.ico"),
     webPreferences: {
-      preload: path.join(__dirname$1, "preload.js"),
+      preload: a.join(D, "preload.js"),
       // Vite plugin-electron compiles preload.ts to .js
-      contextIsolation: true,
+      contextIsolation: !0,
       // Security requirement
-      nodeIntegration: false
+      nodeIntegration: !1
     }
-  });
-  win.webContents.on("did-finish-load", () => {
-    win?.webContents.send("main-process-message", (/* @__PURE__ */ new Date()).toLocaleString());
-  });
-  if (VITE_DEV_SERVER_URL) {
-    win.loadURL(VITE_DEV_SERVER_URL);
-  } else {
-    win.loadFile(path.join(RENDERER_DIST, "index.html"));
-  }
+  }), d.webContents.on("did-finish-load", () => {
+    d?.webContents.send("main-process-message", (/* @__PURE__ */ new Date()).toLocaleString());
+  }), v ? d.loadURL(v) : d.loadFile(a.join(R, "index.html"));
 }
-async function stopMonitorNative() {
-  return new Promise((resolve) => {
-    if (!monitorProcess) return resolve(true);
-    const proc = monitorProcess;
-    monitorProcess = null;
-    let finished = false;
-    const done = () => {
-      if (!finished) {
-        finished = true;
-        setTimeout(() => resolve(true), 500);
-      }
+async function j() {
+  return new Promise((i) => {
+    if (!p) return i(!0);
+    const r = p;
+    p = null;
+    let t = !1;
+    const e = () => {
+      t || (t = !0, setTimeout(() => i(!0), 500));
     };
-    proc.once("close", done);
-    proc.once("exit", done);
-    proc.once("error", done);
-    if (process.platform === "win32" && proc.pid) {
+    if (r.once("close", e), r.once("exit", e), r.once("error", e), process.platform === "win32" && r.pid) {
       try {
-        execSync(`taskkill /pid ${proc.pid} /T /F`, { stdio: "ignore" });
+        T(`taskkill /pid ${r.pid} /T /F`, { stdio: "ignore" });
       } catch {
       }
-      setTimeout(done, 1e3);
+      setTimeout(e, 1e3);
     } else {
       try {
-        proc.kill("SIGINT");
+        r.kill("SIGINT");
       } catch {
       }
       setTimeout(() => {
         try {
-          proc.kill("SIGTERM");
+          r.kill("SIGTERM");
         } catch {
         }
-      }, 1500);
-      setTimeout(() => {
+      }, 1500), setTimeout(() => {
         try {
-          proc.kill("SIGKILL");
+          r.kill("SIGKILL");
         } catch {
         }
-        done();
+        e();
       }, 3e3);
     }
   });
 }
-async function withPortAccess(_port, operation) {
-  await stopMonitorNative();
-  return await operation();
+async function I(i, r) {
+  return await j(), await r();
 }
-function setupIpcHandlers() {
-  ipcMain.handle("dialog:openFolder", async () => {
-    const { canceled, filePaths } = await dialog.showOpenDialog({
+function G() {
+  u.handle("dialog:openFolder", async () => {
+    const { canceled: r, filePaths: t } = await A.showOpenDialog({
       properties: ["openDirectory"]
     });
-    if (!canceled) {
-      return filePaths[0];
-    }
-    return null;
-  });
-  ipcMain.handle("dialog:openFile", async () => {
-    const { canceled, filePaths } = await dialog.showOpenDialog({
+    return r ? null : t[0];
+  }), u.handle("dialog:openFile", async () => {
+    const { canceled: r, filePaths: t } = await A.showOpenDialog({
       properties: ["openFile"],
       filters: [
         { name: "Code Files", extensions: ["py", "js", "ts", "json", "html", "css", "md", "txt", "c", "cpp", "h", "hpp"] },
         { name: "All Files", extensions: ["*"] }
       ]
     });
-    if (!canceled && filePaths.length > 0) {
+    if (!r && t.length > 0)
       try {
-        const filePath = filePaths[0];
-        const content = fs.readFileSync(filePath, "utf-8");
+        const e = t[0], n = f.readFileSync(e, "utf-8");
         return {
-          path: filePath,
-          name: path.basename(filePath),
-          content
+          path: e,
+          name: a.basename(e),
+          content: n
         };
       } catch (e) {
         return { error: e.message };
       }
-    }
     return null;
-  });
-  ipcMain.handle("fs:readDir", async (_, { dirPath }) => {
+  }), u.handle("fs:readDir", async (r, { dirPath: t }) => {
     try {
-      if (!fs.existsSync(dirPath)) return [];
-      const stats = fs.statSync(dirPath);
-      if (!stats.isDirectory()) return [];
-      const children = fs.readdirSync(dirPath).map((child) => {
-        const fullPath = path.join(dirPath, child);
-        let isDir = false;
+      return f.existsSync(t) ? f.statSync(t).isDirectory() ? f.readdirSync(t).map((s) => {
+        const o = a.join(t, s);
+        let c = !1;
         try {
-          isDir = fs.statSync(fullPath).isDirectory();
-        } catch (e) {
+          c = f.statSync(o).isDirectory();
+        } catch {
         }
         return {
-          id: fullPath,
-          name: child,
-          type: isDir ? "folder" : "file",
-          filePath: fullPath,
-          children: isDir ? [] : void 0
+          id: o,
+          name: s,
+          type: c ? "folder" : "file",
+          filePath: o,
+          children: c ? [] : void 0
           // Empty array signifies an unloaded folder
         };
-      });
-      return children.sort((a, b) => {
-        if (a.type === b.type) return a.name.localeCompare(b.name);
-        return a.type === "folder" ? -1 : 1;
-      });
-    } catch (e) {
+      }).sort((s, o) => s.type === o.type ? s.name.localeCompare(o.name) : s.type === "folder" ? -1 : 1) : [] : [];
+    } catch {
       return [];
     }
-  });
-  ipcMain.handle("fs:readFile", async (_, { filePath }) => {
+  }), u.handle("fs:readFile", async (r, { filePath: t }) => {
     try {
-      return fs.readFileSync(filePath, "utf-8");
-    } catch (e) {
+      return f.readFileSync(t, "utf-8");
+    } catch {
       return null;
     }
-  });
-  ipcMain.handle("fs:createFile", async (_, { filePath, content = "" }) => {
+  }), u.handle("fs:createFile", async (r, { filePath: t, content: e = "" }) => {
     try {
-      fs.writeFileSync(filePath, content, "utf-8");
-      return { success: true };
-    } catch (e) {
-      return { success: false, message: e.message };
+      return f.writeFileSync(t, e, "utf-8"), { success: !0 };
+    } catch (n) {
+      return { success: !1, message: n.message };
     }
-  });
-  ipcMain.handle("fs:createFolder", async (_, { folderPath }) => {
+  }), u.handle("fs:createFolder", async (r, { folderPath: t }) => {
     try {
-      fs.mkdirSync(folderPath, { recursive: true });
-      return { success: true };
+      return f.mkdirSync(t, { recursive: !0 }), { success: !0 };
     } catch (e) {
-      return { success: false, message: e.message };
+      return { success: !1, message: e.message };
     }
-  });
-  ipcMain.handle("fs:delete", async (_, { filePath }) => {
+  }), u.handle("fs:delete", async (r, { filePath: t }) => {
     try {
-      fs.rmSync(filePath, { recursive: true, force: true });
-      return { success: true };
+      return f.rmSync(t, { recursive: !0, force: !0 }), { success: !0 };
     } catch (e) {
-      return { success: false, message: e.message };
+      return { success: !1, message: e.message };
     }
-  });
-  ipcMain.handle("fs:rename", async (_, { oldPath, newPath }) => {
+  }), u.handle("fs:rename", async (r, { oldPath: t, newPath: e }) => {
     try {
-      fs.renameSync(oldPath, newPath);
-      return { success: true };
-    } catch (e) {
-      return { success: false, message: e.message };
+      return f.renameSync(t, e), { success: !0 };
+    } catch (n) {
+      return { success: !1, message: n.message };
     }
-  });
-  ipcMain.handle("saveApiSettings", async (_, config) => {
+  }), u.handle("saveApiSettings", async (r, t) => {
     try {
-      const configDir = path.join(app.getPath("userData"), "config");
-      if (!fs.existsSync(configDir)) {
-        fs.mkdirSync(configDir, { recursive: true });
-      }
-      const settingsPath = path.join(configDir, "settings.json");
-      const secureConfig = {
-        ...config,
-        apiKey: encryptValue(config.apiKey),
+      const e = a.join(g.getPath("userData"), "config");
+      f.existsSync(e) || f.mkdirSync(e, { recursive: !0 });
+      const n = a.join(e, "settings.json"), s = {
+        ...t,
+        apiKey: z(t.apiKey),
         updatedAt: (/* @__PURE__ */ new Date()).toISOString()
       };
-      fs.writeFileSync(settingsPath, JSON.stringify(secureConfig, null, 2), "utf-8");
-      return { success: true, path: settingsPath };
+      return f.writeFileSync(n, JSON.stringify(s, null, 2), "utf-8"), { success: !0, path: n };
     } catch (e) {
-      return { success: false, message: e.message };
+      return { success: !1, message: e.message };
     }
-  });
-  ipcMain.handle("loadApiSettings", async () => {
+  }), u.handle("loadApiSettings", async () => {
     try {
-      const settingsPath = path.join(app.getPath("userData"), "config", "settings.json");
-      if (!fs.existsSync(settingsPath)) return null;
-      const content = fs.readFileSync(settingsPath, "utf-8");
-      const config = JSON.parse(content);
+      const r = a.join(g.getPath("userData"), "config", "settings.json");
+      if (!f.existsSync(r)) return null;
+      const t = f.readFileSync(r, "utf-8"), e = JSON.parse(t);
       return {
-        ...config,
-        apiKey: decryptValue(config.apiKey)
+        ...e,
+        apiKey: k(e.apiKey)
       };
-    } catch (e) {
+    } catch {
       return null;
     }
-  });
-  ipcMain.handle("hardware:listPorts", async () => {
-    return new Promise((resolve) => {
-      exec(
-        `"${getPythonExe()}" -c "import json,serial.tools.list_ports;print(json.dumps([{'path':p.device,'description':p.description or '','manufacturer':p.manufacturer or ''} for p in serial.tools.list_ports.comports()]))"`,
-        { timeout: 1e4 },
-        (err, stdout) => {
-          if (err) {
-            resolve([]);
-            return;
-          }
-          try {
-            const ports = JSON.parse(stdout.trim());
-            resolve(ports);
-          } catch {
-            console.error(
-              "[ElectroAI] Could not parse port list. stdout:",
-              stdout
-            );
-            resolve([]);
-          }
+  }), u.handle("hardware:listPorts", async () => new Promise((r) => {
+    F(
+      `"${y()}" -c "import json,serial.tools.list_ports;print(json.dumps([{'path':p.device,'description':p.description or '','manufacturer':p.manufacturer or ''} for p in serial.tools.list_ports.comports()]))"`,
+      { timeout: 1e4 },
+      (t, e) => {
+        if (t) {
+          r([]);
+          return;
         }
-      );
-    });
-  });
-  ipcMain.handle("hardware:checkChip", async (_, { port }) => {
-    await stopMonitorNative();
-    return new Promise((resolve) => {
-      let resolved = false;
-      const done = (result) => {
-        if (!resolved) {
-          resolved = true;
-          resolve(result);
+        try {
+          const n = JSON.parse(e.trim());
+          r(n);
+        } catch {
+          console.error(
+            "[ElectroAI] Could not parse port list. stdout:",
+            e
+          ), r([]);
         }
-      };
-      const ser = spawn(getPythonExe(), [
-        "-c",
-        `
+      }
+    );
+  })), u.handle("hardware:checkChip", async (r, { port: t }) => (await j(), new Promise((e) => {
+    let n = !1;
+    const s = (h) => {
+      n || (n = !0, e(h));
+    }, o = _(y(), [
+      "-c",
+      `
 import serial, sys, time
 try:
-    s = serial.Serial('${port}', 115200, timeout=2)
+    s = serial.Serial('${t}', 115200, timeout=2)
     time.sleep(0.3)
     s.close()
     print('ok')
@@ -321,188 +244,139 @@ except Exception as e:
     sys.stderr.flush()
     sys.exit(1)
 `
-      ]);
-      let out = "";
-      let errBuf = "";
-      ser.stdout.on("data", (d) => out += d.toString());
-      ser.stderr.on("data", (d) => errBuf += d.toString());
-      ser.on("error", (e) => {
-        console.error("[ElectroAI] spawn error:", e.message);
-        done({
-          connected: false,
-          message: `Python not found. Install Python and pyserial.`
-        });
+    ]);
+    let c = "", l = "";
+    o.stdout.on("data", (h) => c += h.toString()), o.stderr.on("data", (h) => l += h.toString()), o.on("error", (h) => {
+      console.error("[ElectroAI] spawn error:", h.message), s({
+        connected: !1,
+        message: "Python not found. Install Python and pyserial."
       });
-      ser.on("close", (code) => {
-        console.log(
-          `[ElectroAI] checkChip python exited code=${code}, stdout="${out.trim()}", stderr="${errBuf.trim()}"`
-        );
-        if (out.trim() === "ok") {
-          done({ connected: true });
-        } else {
-          const msg = errBuf.trim() || `Could not open ${port}. Check USB cable, drivers, and close other serial tools.`;
-          done({ connected: false, message: msg });
-        }
-      });
-      const timer = setTimeout(() => {
-        ser.kill();
-        done({
-          connected: false,
-          message: `Timeout — no response from ${port}.`
-        });
-      }, 8e3);
-      ser.on("close", () => clearTimeout(timer));
+    }), o.on("close", (h) => {
+      if (console.log(
+        `[ElectroAI] checkChip python exited code=${h}, stdout="${c.trim()}", stderr="${l.trim()}"`
+      ), c.trim() === "ok")
+        s({ connected: !0 });
+      else {
+        const x = l.trim() || `Could not open ${t}. Check USB cable, drivers, and close other serial tools.`;
+        s({ connected: !1, message: x });
+      }
     });
-  });
-  ipcMain.handle("dialog:saveFile", async (_, { content, defaultName }) => {
-    const { canceled, filePath } = await dialog.showSaveDialog({
-      defaultPath: defaultName ?? "untitled.py",
+    const m = setTimeout(() => {
+      o.kill(), s({
+        connected: !1,
+        message: `Timeout — no response from ${t}.`
+      });
+    }, 8e3);
+    o.on("close", () => clearTimeout(m));
+  }))), u.handle("dialog:saveFile", async (r, { content: t, defaultName: e }) => {
+    const { canceled: n, filePath: s } = await A.showSaveDialog({
+      defaultPath: e ?? "untitled.py",
       filters: [
         { name: "Python", extensions: ["py"] },
         { name: "C/C++", extensions: ["c", "cpp", "ino", "h"] },
         { name: "All Files", extensions: ["*"] }
       ]
     });
-    if (canceled || !filePath) return { success: false };
+    if (n || !s) return { success: !1 };
     try {
-      fs.writeFileSync(filePath, content, "utf-8");
-      return { success: true, filePath, path: filePath };
-    } catch (e) {
-      return { success: false, message: e.message };
+      return f.writeFileSync(s, t, "utf-8"), { success: !0, filePath: s, path: s };
+    } catch (o) {
+      return { success: !1, message: o.message };
     }
-  });
-  ipcMain.handle(
+  }), u.handle(
     "hardware:flash",
-    async (_, { code, port, language, boardId, deviceName, mode }) => {
-      await stopMonitorNative();
-      return new Promise((resolve) => {
-        const tempFilePath = path.join(os.tmpdir(), "electro_temp.py");
-        try {
-          fs.writeFileSync(tempFilePath, code, "utf-8");
-        } catch {
-          resolve({ success: false, message: "Failed to write temp file" });
-          return;
-        }
-        setTimeout(() => {
-          const uploaderPath = getResourcePath(path.join("firmware-tools", "core", "uploader.py"));
-          const args = [
-            uploaderPath,
-            "--port",
-            port,
-            "--file",
-            tempFilePath,
-            "--language",
-            language,
-            "--board-id",
-            boardId ?? "arduino:avr:uno"
-          ];
-          if (deviceName) {
-            args.push("--device-name", deviceName);
-          }
-          if (mode) {
-            args.push("--mode", mode);
-          }
-          if (mode === "run") {
-            const runProcess = spawn(getPythonExe(), args);
-            monitorProcess = runProcess;
-            runProcess.stdout?.on("data", (data) => {
-              if (win) win.webContents.send("terminal-output", data.toString("utf8"));
-            });
-            runProcess.stderr?.on("data", (data) => {
-              if (win) win.webContents.send("terminal-output", data.toString("utf8"));
-            });
-            runProcess.on("close", () => {
-              if (monitorProcess === runProcess) monitorProcess = null;
-            });
-            resolve({ success: true, message: "Streaming live execution" });
-          } else {
-            execFile(
-              getPythonExe(),
-              args,
-              { timeout: 6e4 },
-              (error, stdout, stderr) => {
-                if (error) {
-                  resolve({
-                    success: false,
-                    message: stderr.trim() || stdout.trim() || error.message
-                  });
-                  return;
-                }
-                const monitorPath = getResourcePath(path.join("firmware-tools", "serial", "monitor.py"));
-                monitorProcess = spawn(getPythonExe(), [
-                  monitorPath,
-                  "--port",
-                  port,
-                  "--baud",
-                  "115200"
-                ]);
-                monitorProcess.stdout?.on("data", (data) => {
-                  if (win) {
-                    win.webContents.send("terminal-output", data.toString("utf8"));
-                  }
+    async (r, { code: t, port: e, language: n, boardId: s, deviceName: o, mode: c }) => (await j(), new Promise((l) => {
+      const m = a.join(C.tmpdir(), "electro_temp.py");
+      try {
+        f.writeFileSync(m, t, "utf-8");
+      } catch {
+        l({ success: !1, message: "Failed to write temp file" });
+        return;
+      }
+      setTimeout(() => {
+        const x = [
+          w(a.join("firmware-tools", "core", "uploader.py")),
+          "--port",
+          e,
+          "--file",
+          m,
+          "--language",
+          n,
+          "--board-id",
+          s ?? "arduino:avr:uno"
+        ];
+        if (o && x.push("--device-name", o), c && x.push("--mode", c), c === "run") {
+          const P = _(y(), x);
+          p = P, P.stdout?.on("data", (E) => {
+            d && d.webContents.send("terminal-output", E.toString("utf8"));
+          }), P.stderr?.on("data", (E) => {
+            d && d.webContents.send("terminal-output", E.toString("utf8"));
+          }), P.on("close", () => {
+            p === P && (p = null);
+          }), l({ success: !0, message: "Streaming live execution" });
+        } else
+          b(
+            y(),
+            x,
+            { timeout: 6e4 },
+            (P, E, U) => {
+              if (P) {
+                l({
+                  success: !1,
+                  message: U.trim() || E.trim() || P.message
                 });
-                monitorProcess.stderr?.on("data", () => {
-                });
-                monitorProcess.on("close", () => {
-                  monitorProcess = null;
-                });
-                resolve({
-                  success: true,
-                  message: stdout.trim() || "Upload complete — device running"
-                });
+                return;
               }
-            );
-          }
-        }, 1e3);
-      });
-    }
-  );
-  ipcMain.handle(
+              const K = w(a.join("firmware-tools", "serial", "monitor.py"));
+              p = _(y(), [
+                K,
+                "--port",
+                e,
+                "--baud",
+                "115200"
+              ]), p.stdout?.on("data", (V) => {
+                d && d.webContents.send("terminal-output", V.toString("utf8"));
+              }), p.stderr?.on("data", () => {
+              }), p.on("close", () => {
+                p = null;
+              }), l({
+                success: !0,
+                message: E.trim() || "Upload complete — device running"
+              });
+            }
+          );
+      }, 1e3);
+    }))
+  ), u.handle(
     "hardware:startMonitor",
-    async (_, { port, baudRate = 115200 }) => {
-      if (monitorProcess)
-        return { success: false, message: "Monitor already running" };
-      const scriptPath = getResourcePath(path.join("firmware-tools", "serial", "monitor.py"));
-      monitorProcess = spawn(getPythonExe(), [
-        scriptPath,
+    async (r, { port: t, baudRate: e = 115200 }) => {
+      if (p)
+        return { success: !1, message: "Monitor already running" };
+      const n = w(a.join("firmware-tools", "serial", "monitor.py"));
+      return p = _(y(), [
+        n,
         "--port",
-        port,
+        t,
         "--baud",
-        baudRate.toString()
-      ]);
-      monitorProcess.stdout?.on("data", (data) => {
-        if (win) {
-          win.webContents.send("terminal-output", data.toString("utf8"));
-        }
-      });
-      monitorProcess.stderr?.on("data", (data) => {
-        console.error(`Monitor Error: ${data}`);
-      });
-      monitorProcess.on("close", () => {
-        monitorProcess = null;
-      });
-      return { success: true };
+        e.toString()
+      ]), p.stdout?.on("data", (s) => {
+        d && d.webContents.send("terminal-output", s.toString("utf8"));
+      }), p.stderr?.on("data", (s) => {
+        console.error(`Monitor Error: ${s}`);
+      }), p.on("close", () => {
+        p = null;
+      }), { success: !0 };
     }
-  );
-  ipcMain.handle("hardware:stopMonitor", async () => {
-    await stopMonitorNative();
-    return { success: true };
-  });
-  let isStoppingExecution = false;
-  ipcMain.handle("hardware:stopExecution", async (_, { port }) => {
-    if (isStoppingExecution) {
-      return { success: false, message: "Stop already in progress" };
-    }
-    isStoppingExecution = true;
-    await stopMonitorNative();
-    return new Promise((resolve) => {
-      const stopScript = `
+  ), u.handle("hardware:stopMonitor", async () => (await j(), { success: !0 }));
+  let i = !1;
+  u.handle("hardware:stopExecution", async (r, { port: t }) => i ? { success: !1, message: "Stop already in progress" } : (i = !0, await j(), new Promise((e) => {
+    const n = `
 import serial, sys, time
 
 success = False
 for attempt in range(15):
     try:
-        s = serial.Serial('${port}', 115200, timeout=1)
+        s = serial.Serial('${t}', 115200, timeout=1)
         # Send Ctrl+C multiple times to ensure break
         s.write(b'\\r\\x03\\x03\\x03')  
         time.sleep(0.2)
@@ -515,290 +389,201 @@ for attempt in range(15):
 if not success:
     sys.exit(1)
 `;
-      const ser = spawn(getPythonExe(), ["-c", stopScript]);
-      ser.on("close", () => {
-        const monitorPath = getResourcePath(path.join("firmware-tools", "serial", "monitor.py"));
-        monitorProcess = spawn(getPythonExe(), [monitorPath, "--port", port, "--baud", "115200"]);
-        monitorProcess.stdout?.on("data", (data) => {
-          if (win) win.webContents.send("terminal-output", data.toString("utf8"));
-        });
-        monitorProcess.stderr?.on("data", (data) => {
-          console.error(`Monitor Error: ${data}`);
-        });
-        monitorProcess.on("close", () => {
-          monitorProcess = null;
-        });
-        isStoppingExecution = false;
-        resolve({ success: true });
-      });
+    _(y(), ["-c", n]).on("close", () => {
+      const o = w(a.join("firmware-tools", "serial", "monitor.py"));
+      p = _(y(), [o, "--port", t, "--baud", "115200"]), p.stdout?.on("data", (c) => {
+        d && d.webContents.send("terminal-output", c.toString("utf8"));
+      }), p.stderr?.on("data", (c) => {
+        console.error(`Monitor Error: ${c}`);
+      }), p.on("close", () => {
+        p = null;
+      }), i = !1, e({ success: !0 });
     });
-  });
-  ipcMain.handle("hardware:listFiles", async (_event, { port }) => {
-    return withPortAccess(port, () => {
-      return new Promise((resolve) => {
-        const scriptPath = getResourcePath(path.join("firmware-tools", "core", "fs_manager.py"));
-        exec(
-          `"${getPythonExe()}" "${scriptPath}" --port ${port} --action list`,
-          { timeout: 3e4 },
-          (error, stdout) => {
-            if (error) {
-              console.error("[ElectroAI] listFiles error:", error.message);
-              resolve({ error: "Failed to read device" });
-              return;
-            }
-            try {
-              const files = JSON.parse(stdout.trim());
-              resolve(files);
-            } catch (e) {
-              console.error("[ElectroAI] listFiles parse error:", stdout);
-              resolve({ error: "Invalid data from device" });
-            }
-          }
-        );
-      });
-    });
-  });
-  ipcMain.handle("hardware:readFile", async (_event, { port, filePath }) => {
-    return withPortAccess(port, () => {
-      return new Promise((resolve) => {
-        const scriptPath = getResourcePath(path.join("firmware-tools", "core", "fs_manager.py"));
-        exec(
-          `"${getPythonExe()}" "${scriptPath}" --port ${port} --action read --path "${filePath}"`,
-          { timeout: 3e4 },
-          (error, stdout, stderr) => {
-            if (error) {
-              console.error("[ElectroAI] readFile error:", error.message);
-              resolve({ error: stderr || error.message });
-              return;
-            }
-            try {
-              const data = JSON.parse(stdout.trim());
-              resolve(data);
-            } catch (e) {
-              console.error("[ElectroAI] readFile parse error:", stdout);
-              resolve({ error: "Invalid response from device" });
-            }
-          }
-        );
-      });
-    });
-  });
-  ipcMain.handle(
-    "hardware:writeFile",
-    async (_event, { port, filePath, content }) => {
-      return withPortAccess(port, () => {
-        return new Promise((resolve) => {
-          const tempFilePath = path.join(
-            os.tmpdir(),
-            "electro_write_temp_" + Date.now() + ".py"
-          );
-          try {
-            fs.writeFileSync(tempFilePath, content, "utf-8");
-          } catch (e) {
-            resolve({ success: false, message: "Temp file error" });
-            return;
-          }
-          const scriptPath = getResourcePath(path.join("firmware-tools", "core", "fs_manager.py"));
-          execFile(
-            getPythonExe(),
-            [
-              scriptPath,
-              "--port",
-              port,
-              "--action",
-              "write",
-              "--path",
-              filePath,
-              "--localpath",
-              tempFilePath
-            ],
-            { timeout: 3e4 },
-            (error, stderr) => {
-              try {
-                fs.unlinkSync(tempFilePath);
-              } catch (e) {
-              }
-              if (error) {
-                console.error("[ElectroAI] writeFile error:", stderr || error.message);
-                resolve({ success: false, message: stderr || error.message });
-              } else {
-                console.log("[ElectroAI] writeFile success:", filePath);
-                resolve({ success: true });
-              }
-            }
-          );
-        });
-      });
-    }
-  );
-  ipcMain.handle("hardware:deleteFile", async (_event, { port, filePath }) => {
-    return withPortAccess(port, () => {
-      return new Promise((resolve) => {
-        const scriptPath = getResourcePath(path.join("firmware-tools", "core", "fs_manager.py"));
-        exec(
-          `"${getPythonExe()}" "${scriptPath}" --port ${port} --action delete --path "${filePath}"`,
-          { timeout: 3e4 },
-          (error, stdout) => {
-            if (error) {
-              resolve({ success: false, message: "Failed to delete device file" });
-              return;
-            }
-            try {
-              const data = JSON.parse(stdout.trim());
-              resolve(data);
-            } catch (e) {
-              resolve({ success: false, message: "Invalid output from device" });
-            }
-          }
-        );
-      });
-    });
-  });
-  ipcMain.handle("hardware:renameFile", async (_event, { port, oldPath, newPath }) => {
-    return withPortAccess(port, () => {
-      return new Promise((resolve) => {
-        const scriptPath = getResourcePath(path.join("firmware-tools", "core", "fs_manager.py"));
-        exec(
-          `"${getPythonExe()}" "${scriptPath}" --port ${port} --action rename --path "${oldPath}" --newpath "${newPath}"`,
-          { timeout: 3e4 },
-          (error, stdout) => {
-            if (error) {
-              resolve({ success: false, message: "Failed to rename device file" });
-              return;
-            }
-            try {
-              const data = JSON.parse(stdout.trim());
-              resolve(data);
-            } catch (e) {
-              resolve({ success: false, message: "Invalid output from device" });
-            }
-          }
-        );
-      });
-    });
-  });
-  ipcMain.handle("ai:generate", async (_, payload) => {
-    try {
-      const settingsPath = path.join(app.getPath("userData"), "config", "settings.json");
-      if (!fs.existsSync(settingsPath)) {
-        throw new Error("API Settings not configured. Go to Tools > Settings.");
+  }))), u.handle("hardware:listFiles", async (r, { port: t }) => I(t, () => new Promise((e) => {
+    const n = w(a.join("firmware-tools", "core", "fs_manager.py"));
+    F(
+      `"${y()}" "${n}" --port ${t} --action list`,
+      { timeout: 3e4 },
+      (s, o) => {
+        if (s) {
+          console.error("[ElectroAI] listFiles error:", s.message), e({ error: "Failed to read device" });
+          return;
+        }
+        try {
+          const c = JSON.parse(o.trim());
+          e(c);
+        } catch {
+          console.error("[ElectroAI] listFiles parse error:", o), e({ error: "Invalid data from device" });
+        }
       }
-      const content = fs.readFileSync(settingsPath, "utf-8");
-      const config = JSON.parse(content);
-      const decryptedKey = decryptValue(config.apiKey);
-      const mcpUrl = "http://localhost:4000/api/v1/ai/generate";
-      const response = await fetch(mcpUrl, {
+    );
+  }))), u.handle("hardware:readFile", async (r, { port: t, filePath: e }) => I(t, () => new Promise((n) => {
+    const s = w(a.join("firmware-tools", "core", "fs_manager.py"));
+    F(
+      `"${y()}" "${s}" --port ${t} --action read --path "${e}"`,
+      { timeout: 3e4 },
+      (o, c, l) => {
+        if (o) {
+          console.error("[ElectroAI] readFile error:", o.message), n({ error: l || o.message });
+          return;
+        }
+        try {
+          const m = JSON.parse(c.trim());
+          n(m);
+        } catch {
+          console.error("[ElectroAI] readFile parse error:", c), n({ error: "Invalid response from device" });
+        }
+      }
+    );
+  }))), u.handle(
+    "hardware:writeFile",
+    async (r, { port: t, filePath: e, content: n }) => I(t, () => new Promise((s) => {
+      const o = a.join(
+        C.tmpdir(),
+        "electro_write_temp_" + Date.now() + ".py"
+      );
+      try {
+        f.writeFileSync(o, n, "utf-8");
+      } catch {
+        s({ success: !1, message: "Temp file error" });
+        return;
+      }
+      const c = w(a.join("firmware-tools", "core", "fs_manager.py"));
+      b(
+        y(),
+        [
+          c,
+          "--port",
+          t,
+          "--action",
+          "write",
+          "--path",
+          e,
+          "--localpath",
+          o
+        ],
+        { timeout: 3e4 },
+        (l, m) => {
+          try {
+            f.unlinkSync(o);
+          } catch {
+          }
+          l ? (console.error("[ElectroAI] writeFile error:", m || l.message), s({ success: !1, message: m || l.message })) : (console.log("[ElectroAI] writeFile success:", e), s({ success: !0 }));
+        }
+      );
+    }))
+  ), u.handle("hardware:deleteFile", async (r, { port: t, filePath: e }) => I(t, () => new Promise((n) => {
+    const s = w(a.join("firmware-tools", "core", "fs_manager.py"));
+    F(
+      `"${y()}" "${s}" --port ${t} --action delete --path "${e}"`,
+      { timeout: 3e4 },
+      (o, c) => {
+        if (o) {
+          n({ success: !1, message: "Failed to delete device file" });
+          return;
+        }
+        try {
+          const l = JSON.parse(c.trim());
+          n(l);
+        } catch {
+          n({ success: !1, message: "Invalid output from device" });
+        }
+      }
+    );
+  }))), u.handle("hardware:renameFile", async (r, { port: t, oldPath: e, newPath: n }) => I(t, () => new Promise((s) => {
+    const o = w(a.join("firmware-tools", "core", "fs_manager.py"));
+    F(
+      `"${y()}" "${o}" --port ${t} --action rename --path "${e}" --newpath "${n}"`,
+      { timeout: 3e4 },
+      (c, l) => {
+        if (c) {
+          s({ success: !1, message: "Failed to rename device file" });
+          return;
+        }
+        try {
+          const m = JSON.parse(l.trim());
+          s(m);
+        } catch {
+          s({ success: !1, message: "Invalid output from device" });
+        }
+      }
+    );
+  }))), u.handle("ai:generate", async (r, t) => {
+    try {
+      const e = a.join(g.getPath("userData"), "config", "settings.json");
+      if (!f.existsSync(e))
+        throw new Error("API Settings not configured. Go to Tools > Settings.");
+      const n = f.readFileSync(e, "utf-8"), s = JSON.parse(n), o = k(s.apiKey), l = await fetch("http://localhost:4000/api/v1/ai/generate", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          ...payload,
+          ...t,
           // prompt, sessionId, etc.
           apiConfig: {
-            ...config,
-            apiKey: decryptedKey
+            ...s,
+            apiKey: o
           }
         })
       });
-      if (!response.ok) {
-        const errData = await response.json().catch(() => ({}));
-        throw new Error(errData.error || `MCP Server error: ${response.status}`);
+      if (!l.ok) {
+        const h = await l.json().catch(() => ({}));
+        throw new Error(h.error || `MCP Server error: ${l.status}`);
       }
-      const result = await response.json();
       return {
-        success: true,
-        response_text: result.data
+        success: !0,
+        response_text: (await l.json()).data
       };
     } catch (e) {
-      console.error("[AiProxy] Generation failed:", e);
-      return { success: false, error: { type: "RUNTIME", message: e.message } };
+      return console.error("[AiProxy] Generation failed:", e), { success: !1, error: { type: "RUNTIME", message: e.message } };
     }
-  });
-  ipcMain.handle("window:minimize", () => {
-    win?.minimize();
-  });
-  ipcMain.handle("window:maximize", () => {
-    if (win?.isMaximized()) {
-      win.unmaximize();
-    } else {
-      win?.maximize();
-    }
-  });
-  ipcMain.handle("window:close", () => {
-    win?.close();
+  }), u.handle("window:minimize", () => {
+    d?.minimize();
+  }), u.handle("window:maximize", () => {
+    d?.isMaximized() ? d.unmaximize() : d?.maximize();
+  }), u.handle("window:close", () => {
+    d?.close();
   });
 }
-function startMcpServer() {
-  const mcpPath = getResourcePath(path.join("mcp-server", "src", "server.js"));
-  if (fs.existsSync(mcpPath)) {
-    console.log(`[ElectroAI] Starting MCP Server at ${mcpPath}...`);
-    mcpProcess = spawn(process.execPath, [mcpPath], {
-      stdio: "pipe",
-      env: { ...process.env, ELECTRON_RUN_AS_NODE: "1", PORT: "4000", WS_PORT: "4001" }
-    });
-    mcpProcess.stdout?.on("data", (data) => console.log(`[MCP] ${data}`));
-    mcpProcess.stderr?.on("data", (data) => console.error(`[MCP] ${data}`));
-    mcpProcess.on("error", (err) => {
-      console.error("[ElectroAI] Failed to start MCP Server:", err);
-    });
-    mcpProcess.on("close", (code) => {
-      console.log(`[ElectroAI] MCP Server exited with code ${code}`);
-    });
-  } else {
-    console.warn(`[ElectroAI] MCP Server not found at ${mcpPath}`);
-  }
+function B() {
+  const i = w(a.join("mcp-server", "src", "server.js"));
+  f.existsSync(i) ? (console.log(`[ElectroAI] Starting MCP Server at ${i}...`), S = _(process.execPath, [i], {
+    stdio: "pipe",
+    env: { ...process.env, ELECTRON_RUN_AS_NODE: "1", PORT: "4000", WS_PORT: "4001" }
+  }), S.stdout?.on("data", (r) => console.log(`[MCP] ${r}`)), S.stderr?.on("data", (r) => console.error(`[MCP] ${r}`)), S.on("error", (r) => {
+    console.error("[ElectroAI] Failed to start MCP Server:", r);
+  }), S.on("close", (r) => {
+    console.log(`[ElectroAI] MCP Server exited with code ${r}`);
+  })) : console.warn(`[ElectroAI] MCP Server not found at ${i}`);
 }
-function killAllProcesses() {
-  if (monitorProcess) {
+function N() {
+  if (p)
     try {
-      if (process.platform === "win32" && monitorProcess.pid) {
-        execSync(`taskkill /pid ${monitorProcess.pid} /T /F`, { stdio: "ignore" });
-      } else {
-        monitorProcess.kill("SIGKILL");
-      }
+      process.platform === "win32" && p.pid ? T(`taskkill /pid ${p.pid} /T /F`, { stdio: "ignore" }) : p.kill("SIGKILL");
     } catch {
     }
-  }
-  if (mcpProcess) {
+  if (S)
     try {
-      if (process.platform === "win32" && mcpProcess.pid) {
-        execSync(`taskkill /pid ${mcpProcess.pid} /T /F`, { stdio: "ignore" });
-      } else {
-        mcpProcess.kill("SIGKILL");
-      }
+      process.platform === "win32" && S.pid ? T(`taskkill /pid ${S.pid} /T /F`, { stdio: "ignore" }) : S.kill("SIGKILL");
     } catch {
     }
-  }
 }
-app.on("before-quit", () => {
-  killAllProcesses();
+g.on("before-quit", () => {
+  N();
 });
-app.on("window-all-closed", () => {
-  killAllProcesses();
-  if (process.platform !== "darwin") {
-    app.quit();
-    win = null;
-  }
+g.on("window-all-closed", () => {
+  N(), process.platform !== "darwin" && (g.quit(), d = null);
 });
-app.on("second-instance", () => {
-  if (win) {
-    if (win.isMinimized()) win.restore();
-    win.focus();
-  }
+g.on("second-instance", () => {
+  d && (d.isMinimized() && d.restore(), d.focus());
 });
-app.on("activate", () => {
-  if (BrowserWindow.getAllWindows().length === 0) {
-    createWindow();
-  }
+g.on("activate", () => {
+  O.getAllWindows().length === 0 && L();
 });
-if (gotTheLock) {
-  app.whenReady().then(() => {
-    setupIpcHandlers();
-    startMcpServer();
-    createWindow();
-  });
-}
+M && g.whenReady().then(() => {
+  G(), B(), L();
+});
 export {
-  MAIN_DIST,
-  RENDERER_DIST,
-  VITE_DEV_SERVER_URL
+  Z as MAIN_DIST,
+  R as RENDERER_DIST,
+  v as VITE_DEV_SERVER_URL
 };

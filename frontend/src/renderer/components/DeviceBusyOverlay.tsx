@@ -1,4 +1,3 @@
-import React from 'react';
 import { Loader2 } from 'lucide-react';
 import { useAppStore } from '../store/useAppStore';
 

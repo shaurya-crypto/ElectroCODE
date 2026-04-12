@@ -27,10 +27,11 @@ if (!gotTheLock) {
 }
 
 function getResourcePath(subPath: string): string {
-  const isDev = !!process.env.VITE_DEV_SERVER_URL;
-  if (isDev) {
+  if (!app.isPackaged) {
+    // Development: Use standard relative paths (project root)
     return path.join(process.env.APP_ROOT!, "..", subPath);
   }
+  // Production: Use process.resourcesPath for bundled folders
   return path.join(process.resourcesPath, subPath);
 }
 
@@ -90,7 +91,9 @@ function createWindow() {
     minWidth: 900,
     minHeight: 600,
     frame: false, // Frameless window
-    icon: path.join(process.env.VITE_PUBLIC, "electron-vite.svg"),
+    icon: app.isPackaged 
+      ? path.join(process.resourcesPath, "icon.ico") 
+      : path.join(process.env.VITE_PUBLIC!, "icon.ico"),
     webPreferences: {
       preload: path.join(__dirname, "preload.js"), // Vite plugin-electron compiles preload.ts to .js
       contextIsolation: true, // Security requirement
