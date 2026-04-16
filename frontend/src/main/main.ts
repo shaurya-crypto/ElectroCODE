@@ -6,6 +6,8 @@ import fs from "node:fs";
 import os from "node:os";
 import http from "node:http";
 import https from "node:https";
+import pty from "node-pty";
+import { SerialPort } from "serialport";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -19,7 +21,8 @@ process.env.VITE_PUBLIC = VITE_DEV_SERVER_URL
   : RENDERER_DIST;
 
 let win: BrowserWindow | null;
-let monitorProcess: ChildProcess | null = null; // Keeps track of the live serial monitor
+let activeSerialPort: SerialPort | null = null; // Replaces monitorProcess
+let ptyProcess: pty.IPty | null = null; // Node-pty instance
 let mcpProcess: ChildProcess | null = null; // MCP Server process
 
 // Ensure single instance
@@ -120,49 +123,19 @@ function createWindow() {
 
 async function stopMonitorNative(): Promise<boolean> {
   return new Promise((resolve) => {
-    if (!monitorProcess) return resolve(true);
+    if (!activeSerialPort) return resolve(true);
 
-    const proc = monitorProcess;
-    monitorProcess = null;
+    const port = activeSerialPort;
+    activeSerialPort = null;
 
-    let finished = false;
-
-    const done = () => {
-      if (!finished) {
-        finished = true;
+    if (port.isOpen) {
+      port.close((err) => {
+        if (err) console.error("[Serial] Error closing port:", err);
         // Give Windows a moment to fully release the COM port handle
-        setTimeout(() => resolve(true), 500);
-      }
-    };
-
-    // When process actually stops
-    proc.once("close", done);
-    proc.once("exit", done);
-    proc.once("error", done);
-
-    if (process.platform === "win32" && proc.pid) {
-      // 🔴 Windows: MUST use taskkill /T /F IMMEDIATELY to kill the entire
-      // process tree. SIGINT only kills the parent python.exe but leaves
-      // child processes (mpremote, etc.) alive, holding the COM port locked.
-      try {
-        execSync(`taskkill /pid ${proc.pid} /T /F`, { stdio: "ignore" });
-      } catch { }
-      // taskkill is synchronous, give a moment for close event
-      setTimeout(done, 1000);
+        setTimeout(() => resolve(true), 200);
+      });
     } else {
-      // Unix: graceful SIGINT, then escalate
-      try {
-        proc.kill("SIGINT");
-      } catch { }
-
-      setTimeout(() => {
-        try { proc.kill("SIGTERM"); } catch { }
-      }, 1500);
-
-      setTimeout(() => {
-        try { proc.kill("SIGKILL"); } catch { }
-        done();
-      }, 3000);
+      resolve(true);
     }
   });
 }
@@ -469,7 +442,7 @@ for attempt in range(5):
         ser.on("close", resolve);
       });
 
-      return new Promise((resolve) => {
+      return new Promise(async (resolve) => {
         const tempFilePath = path.join(os.tmpdir(), "electro_temp.py");
         try {
           fs.writeFileSync(tempFilePath, code, "utf-8");
@@ -479,7 +452,7 @@ for attempt in range(5):
         }
 
         // Wait a tiny bit for Windows to fully flush handles
-        setTimeout(() => {
+        setTimeout(async () => {
           const uploaderPath = getResourcePath(path.join("firmware-tools", "core", "uploader.py"));
 
           const args = [
@@ -502,35 +475,47 @@ for attempt in range(5):
           }
 
           if (mode === "run") {
-            // Live stream execution - acts as the active monitor
-            const runProcess = spawn(getPythonExe(), args);
-            monitorProcess = runProcess;
+            // Live stream execution - acts natively using serialport
+            try {
+              if (activeSerialPort) await stopMonitorNative();
 
-            runProcess.stdout?.on("data", (data) => {
-              if (win) win.webContents.send("terminal-output", data.toString("utf8"))
-            });
-            runProcess.stderr?.on("data", (data) => {
-              if (win) win.webContents.send("terminal-output", data.toString("utf8"))
-            });
-            
-            runProcess.on("close", (code) => {
-              if (monitorProcess === runProcess) monitorProcess = null;
-              if (code === 0 || code === null) {
-                resolve({ success: true, message: "Execution finished" });
-              } else {
-                resolve({ success: false, message: "" }); // errors are already streamed
-              }
-            });
+              activeSerialPort = new SerialPort({ path: port, baudRate: 115200 });
+              activeSerialPort.on("data", (data: Buffer) => {
+                if (win) win.webContents.send("terminal-output", data.toString("utf8"));
+              });
+              activeSerialPort.on("error", () => { activeSerialPort = null; });
+              activeSerialPort.on("close", () => { activeSerialPort = null; });
 
-            // Do NOT resolve immediately. Keep the promise alive so the UI knows execution is ongoing.
-            // This enables the "Stop" button in the UI.
+              activeSerialPort.on("open", () => {
+                // Send Ctrl+C multiple times to interrupt current loop
+                activeSerialPort!.write(Buffer.from('\r\x03\x03', 'utf-8'));
+                
+                setTimeout(() => {
+                  // Enter Raw REPL
+                  activeSerialPort!.write(Buffer.from('\x01', 'utf-8'));
+                  
+                  setTimeout(() => {
+                    // Transmit code
+                    activeSerialPort!.write(Buffer.from(code, 'utf-8'));
+                    
+                    setTimeout(() => {
+                      // Execute (Exit Raw REPL)
+                      activeSerialPort!.write(Buffer.from('\x04', 'utf-8'));
+                      resolve({ success: true, message: "Execution started natively" });
+                    }, 100);
+                  }, 100);
+                }, 200);
+              });
+            } catch (err: any) {
+              resolve({ success: false, message: err.message });
+            }
           } else {
             // Flash mode: wait for completion, then start monitor automatically
             execFile(
               getPythonExe(),
               args,
               { timeout: 60000 },
-              (error, stdout, stderr) => {
+              async (error, stdout, stderr) => {
                 if (error) {
                   resolve({
                     success: false,
@@ -540,25 +525,17 @@ for attempt in range(5):
                 }
 
                 // Restart standard monitor
-                const monitorPath = getResourcePath(path.join("firmware-tools", "serial", "monitor.py"));
-                monitorProcess = spawn(getPythonExe(), [
-                  monitorPath,
-                  "--port",
-                  port,
-                  "--baud",
-                  "115200",
-                ]);
-
-                monitorProcess.stdout?.on("data", (data) => {
-                  if (win) {
-                    win.webContents.send("terminal-output", data.toString("utf8"))
-                  }
-                });
-                monitorProcess.stderr?.on("data", () => {
-                });
-                monitorProcess.on("close", () => {
-                  monitorProcess = null;
-                });
+                try {
+                  if (activeSerialPort) await stopMonitorNative();
+                  activeSerialPort = new SerialPort({ path: port, baudRate: 115200 });
+                  activeSerialPort.on("data", (data: Buffer) => {
+                    if (win) win.webContents.send("terminal-output", data.toString("utf8"));
+                  });
+                  activeSerialPort.on("error", () => { activeSerialPort = null; });
+                  activeSerialPort.on("close", () => { activeSerialPort = null; });
+                } catch (e) {
+                  console.error("Could not resume monitor:", e);
+                }
 
                 resolve({
                   success: true,
@@ -576,36 +553,35 @@ for attempt in range(5):
   ipcMain.handle(
     "hardware:startMonitor",
     async (_, { port, baudRate = 115200 }) => {
-      if (monitorProcess)
+      if (activeSerialPort) {
         return { success: false, message: "Monitor already running" };
+      }
 
-      const scriptPath = getResourcePath(path.join("firmware-tools", "serial", "monitor.py"));
+      try {
+        activeSerialPort = new SerialPort({ path: port, baudRate });
 
-      // Use spawn() instead of exec() so we can stream the data continuously
-      monitorProcess = spawn(getPythonExe(), [
-        scriptPath,
-        "--port",
-        port,
-        "--baud",
-        baudRate.toString(),
-      ]);
+        // Listen for data and pipe explicitly to frontend as "terminal-output"
+        activeSerialPort.on("data", (data: Buffer) => {
+          if (win) {
+            win.webContents.send("terminal-output", data.toString("utf8"));
+          }
+        });
 
-      // Listen to every print() statement from the Pico and send it to React
-      monitorProcess.stdout?.on("data", (data) => {
-        if (win) {
-          win.webContents.send("terminal-output", data.toString("utf8"))
-        }
-      });
+        activeSerialPort.on("error", (err) => {
+          console.error(`[Serial] Monitor Error:`, err.message);
+          if (win) win.webContents.send("terminal-output", `\x1b[31m[Port Error: ${err.message}]\x1b[0m\r\n`);
+          activeSerialPort = null;
+        });
 
-      monitorProcess.stderr?.on("data", (data) => {
-        console.error(`Monitor Error: ${data}`);
-      });
+        activeSerialPort.on("close", () => {
+          activeSerialPort = null;
+          if (win) win.webContents.send("terminal-output", `\x1b[33m[Port Closed]\x1b[0m\r\n`);
+        });
 
-      monitorProcess.on("close", () => {
-        monitorProcess = null;
-      });
-
-      return { success: true };
+        return { success: true };
+      } catch (e: any) {
+        return { success: false, message: e.message };
+      }
     },
   );
 
@@ -626,42 +602,35 @@ for attempt in range(5):
     await stopMonitorNative();
 
     return new Promise((resolve) => {
-      const stopScript = `
-import serial, sys, time
+      const s = new SerialPort({ path: port, baudRate: 115200 }, (err) => {
+        if (err) {
+          isStoppingExecution = false;
+          return resolve({ success: false, message: err.message });
+        }
+        
+        // Send Ctrl+C multiple times to ensure break
+        s.write(Buffer.from('\r\x03\x03\x03', 'utf-8'), (wErr) => {
+          if (wErr) console.error("Error writing break:", wErr);
+          
+          setTimeout(() => {
+            s.close(() => {
+              // Now restart standard monitor automatically using our native logic
+              try {
+                activeSerialPort = new SerialPort({ path: port, baudRate: 115200 });
+                activeSerialPort.on("data", (data: Buffer) => {
+                  if (win) win.webContents.send("terminal-output", data.toString("utf8"));
+                });
+                activeSerialPort.on("error", () => { activeSerialPort = null; });
+                activeSerialPort.on("close", () => { activeSerialPort = null; });
+              } catch (e) {
+                console.error("Could not resume monitor automatically:", e);
+              }
 
-success = False
-for attempt in range(15):
-    try:
-        s = serial.Serial('${port}', 115200, timeout=1)
-        # Send Ctrl+C multiple times to ensure break
-        s.write(b'\\r\\x03\\x03\\x03')  
-        time.sleep(0.2)
-        s.close()
-        success = True
-        break
-    except Exception as e:
-        time.sleep(0.2)
-
-if not success:
-    sys.exit(1)
-`;
-      const ser = spawn(getPythonExe(), ["-c", stopScript]);
-
-      ser.on("close", () => {
-        // Restart standard monitor
-        const monitorPath = getResourcePath(path.join("firmware-tools", "serial", "monitor.py"));
-        monitorProcess = spawn(getPythonExe(), [monitorPath, "--port", port, "--baud", "115200"]);
-
-        monitorProcess.stdout?.on("data", (data) => {
-          if (win) win.webContents.send("terminal-output", data.toString("utf8"))
+              isStoppingExecution = false;
+              resolve({ success: true });
+            });
+          }, 400);
         });
-        monitorProcess.stderr?.on("data", (data) => {
-          console.error(`Monitor Error: ${data}`);
-        });
-        monitorProcess.on("close", () => { monitorProcess = null; });
-
-        isStoppingExecution = false;
-        resolve({ success: true });
       });
     });
   });
@@ -918,15 +887,57 @@ if not success:
 
   // 10. Terminal REPL Input — write to the serial monitor's stdin
   ipcMain.handle("terminal:sendInput", async (_, data: string) => {
-    if (monitorProcess && monitorProcess.stdin) {
+    if (activeSerialPort && activeSerialPort.isOpen) {
       try {
-        monitorProcess.stdin.write(data);
+        activeSerialPort.write(data);
         return { success: true };
       } catch (e: any) {
         return { success: false, message: e.message };
       }
     }
     return { success: false, message: "No active serial monitor" };
+  });
+
+  // 10.5. Local Shell (PTY) Integrations
+  ipcMain.handle("pty:start", async (_, workspacePath) => {
+    if (ptyProcess) {
+      try { ptyProcess.kill(); } catch (e) {}
+    }
+    
+    const shellCommand = os.platform() === 'win32' ? 'powershell.exe' : 'bash';
+    try {
+      ptyProcess = pty.spawn(shellCommand, [], {
+        name: 'xterm-color',
+        cols: 80,
+        rows: 24,
+        cwd: workspacePath || os.homedir(),
+        env: process.env as any
+      });
+
+      ptyProcess.onData((data) => {
+        if (win) win.webContents.send("pty:output", data);
+      });
+
+      return { success: true };
+    } catch (err: any) {
+      return { success: false, message: err.message };
+    }
+  });
+
+  ipcMain.handle("pty:input", async (_, data: string) => {
+    if (ptyProcess) {
+      ptyProcess.write(data);
+      return { success: true };
+    }
+    return { success: false, message: "No active shell process" };
+  });
+
+  ipcMain.handle("pty:resize", async (_, { cols, rows }) => {
+    if (ptyProcess) {
+      ptyProcess.resize(cols, rows);
+      return { success: true };
+    }
+    return { success: false };
   });
 
   // 11. Firmware - List mounted volumes (for UF2 bootloader detection)
@@ -1228,13 +1239,14 @@ function startMcpServer(retryCount = 0) {
 // --- APP LIFECYCLE ---
 
 function killAllProcesses() {
-  if (monitorProcess) {
+  if (activeSerialPort) {
     try {
-      if (process.platform === "win32" && monitorProcess.pid) {
-        execSync(`taskkill /pid ${monitorProcess.pid} /T /F`, { stdio: "ignore" });
-      } else {
-        monitorProcess.kill("SIGKILL");
-      }
+      activeSerialPort.close();
+    } catch {}
+  }
+  if (ptyProcess) {
+    try {
+      ptyProcess.kill();
     } catch {}
   }
   if (mcpProcess) {

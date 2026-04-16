@@ -10,14 +10,14 @@ export default defineConfig({
     electron([
       {
         entry: 'src/main/main.ts',
-        vite: { build: { rollupOptions: { output: { format: 'cjs', entryFileNames: '[name].js' } } } }
+        vite: { build: { rollupOptions: { external: ['serialport', 'node-pty'], output: { format: 'es', entryFileNames: '[name].js' } } } }
       },
       {
         entry: 'src/main/preload.ts',
         onstart(options) {
           options.reload()
         },
-        vite: { build: { rollupOptions: { output: { format: 'cjs', entryFileNames: '[name].js' } } } }
+        vite: { build: { rollupOptions: { external: ['serialport', 'node-pty'], output: { format: 'es', entryFileNames: '[name].js' } } } }
       },
     ]),
     renderer(),

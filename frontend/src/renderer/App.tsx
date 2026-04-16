@@ -1,6 +1,6 @@
 import { useEffect } from 'react'
 import { useAppStore } from './store/useAppStore'
-import APISetup from './components/Setup/APISetup'
+import LoginScreen from './components/Setup/APISetup'
 import EditorPage from './pages/EditorPage'
 
 export default function App() {
@@ -75,7 +75,7 @@ export default function App() {
     }
   }, [])
 
-  if (!setupComplete) return <APISetup />
+  if (!setupComplete) return <LoginScreen />
 
   return <EditorPage />
 }

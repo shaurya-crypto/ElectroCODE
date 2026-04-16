@@ -1,418 +1,254 @@
-import { useRef, useEffect, useState, useCallback } from 'react'
-import { Plus, X, Trash2 } from 'lucide-react'
+import { useRef, useEffect, useState } from 'react'
+import { Trash2, Zap, Copy, Radio, SquareTerminal, FileOutput } from 'lucide-react'
+import { Terminal } from 'xterm'
+import { FitAddon } from '@xterm/addon-fit'
+import 'xterm/css/xterm.css'
 import { useAppStore } from '../../store/useAppStore'
 
-// ─── ANSI Colour Map ──────────────────────────────────────────────────────────
-const ANSI_FG: Record<string, string> = {
-  '30': '#4a4a4a', '31': '#f44747', '32': '#4ec9b0', '33': '#cca700',
-  '34': '#569cd6', '35': '#c586c0', '36': '#9cdcfe', '37': '#d4d4d4',
-  '90': '#808080', '91': '#ff6b6b', '92': '#4ec9b0', '93': '#dcdcaa',
-  '94': '#569cd6', '95': '#d2a8ff', '96': '#9cdcfe', '97': '#ffffff',
-}
-const ANSI_BG: Record<string, string> = {
-  '40': '#000000', '41': '#6e0000', '42': '#006400', '43': '#6e5300',
-  '44': '#00006e', '45': '#6e006e', '46': '#006e6e', '47': '#d4d4d4',
-}
+type TerminalTabId = 'serial' | 'output' | 'terminal'
 
-interface TextSegment {
-  text: string
-  style: React.CSSProperties
-}
+const TERMINAL_TABS: { id: TerminalTabId; label: string; icon: React.ReactNode }[] = [
+  { id: 'serial',   label: 'Serial Monitor', icon: <Radio size={13} /> },
+  { id: 'output',   label: 'Output',         icon: <FileOutput size={13} /> },
+  { id: 'terminal', label: 'Local Shell',    icon: <SquareTerminal size={13} /> },
+]
 
-function parseAnsi(raw: string): TextSegment[] {
-  const segments: TextSegment[] = []
-  const regex = /\x1b\[([0-9;]*)m/g
-  let lastIndex = 0
-  let style: React.CSSProperties = {}
-  let match: RegExpExecArray | null
-
-  while ((match = regex.exec(raw)) !== null) {
-    if (match.index > lastIndex) {
-      segments.push({ text: raw.slice(lastIndex, match.index), style: { ...style } })
-    }
-    const codes = match[1] ? match[1].split(';') : ['0']
-    for (const code of codes) {
-      if (!code || code === '0') { style = {}; continue }
-      if (code === '1')  { style = { ...style, fontWeight: 'bold' }; continue }
-      if (code === '2')  { style = { ...style, opacity: 0.6 }; continue }
-      if (code === '3')  { style = { ...style, fontStyle: 'italic' }; continue }
-      if (code === '4')  { style = { ...style, textDecoration: 'underline' }; continue }
-      if (code === '7')  { style = { ...style, filter: 'invert(1)' }; continue }
-      if (ANSI_FG[code]) { style = { ...style, color: ANSI_FG[code] }; continue }
-      if (ANSI_BG[code]) { style = { ...style, backgroundColor: ANSI_BG[code] }; continue }
-    }
-    lastIndex = match.index + match[0].length
-  }
-  if (lastIndex < raw.length) {
-    segments.push({ text: raw.slice(lastIndex), style: { ...style } })
-  }
-  return segments
-}
-
-// ─── Line Classifier (exactly like Thonny) ───────────────────────────────────
-type LineKind =
-  | 'prompt'        // >>> 
-  | 'continuation'  // ...
-  | 'run'           // >>> %Run
-  | 'reboot'        // MPY: soft reboot / hard reset
-  | 'error'         // Traceback / *Error:
-  | 'info'          // MicroPython vX banner
-  | 'stderr'        // (raw stderr — dim red)
-  | 'normal'
-
-function classifyLine(line: string): LineKind {
-  if (/^>>>\s*%Run/.test(line))                         return 'run'
-  if (/^>>>\s/.test(line) || line === '>>>')            return 'prompt'
-  if (/^\.\.\.\s/.test(line) || line === '...')         return 'continuation'
-  if (/MPY:\s*soft reboot|soft reboot|hard reset/i.test(line)) return 'reboot'
-  if (/^(Traceback|.*Error:|.*Exception:)/.test(line))  return 'error'
-  if (/^MicroPython v|^CircuitPython \d|^Type "help"/.test(line)) return 'info'
-  return 'normal'
-}
-
-const LINE_COLORS: Record<LineKind, string | undefined> = {
-  prompt:       '#4ec9b0',
-  continuation: '#808080',
-  run:          '#569cd6',
-  reboot:       '#cca700',
-  error:        '#f44747',
-  info:         '#b5cea8',
-  stderr:       '#f44747',
-  normal:       undefined,
-}
-
-// ─── Single Line Renderer ─────────────────────────────────────────────────────
-function TerminalLine({ line }: { line: string }) {
-  const kind = classifyLine(line)
-  const baseColor = LINE_COLORS[kind]
-  const segments = parseAnsi(line)
-
-  return (
-    <div
-      style={{
-        lineHeight: '19px',
-        minHeight: 19,
-        whiteSpace: 'pre-wrap',
-        wordBreak: 'break-word',
-        overflowWrap: 'anywhere',
-        color: baseColor,
-      }}
-    >
-      {segments.length === 0
-        ? <span>&#x200B;</span>
-        : segments.map((seg, i) => (
-            <span key={i} style={seg.style}>{seg.text}</span>
-          ))
-      }
-    </div>
-  )
-}
-
-// ─── Main Component ───────────────────────────────────────────────────────────
 export default function TerminalPanel() {
-  const {
-    terminals, activeTerminalId, setActiveTerminal,
-    addTerminal, closeTerminal,
-    addTerminalLine, clearTerminal,
-    isConnected,
-  } = useAppStore()
-
+  const { terminals, activeTerminalId, clearTerminal, isConnected, toggleAiPanel, addAiMessage } = useAppStore()
   const activeTerminal = terminals.find((t) => t.id === activeTerminalId)
-  const bottomRef   = useRef<HTMLDivElement>(null)
-  const inputRef    = useRef<HTMLInputElement>(null)
-  const areaRef     = useRef<HTMLDivElement>(null)
 
-  // Command history — exactly like Thonny / real REPL
-  const [history, setHistory]     = useState<string[]>([])
-  const [histIdx, setHistIdx]     = useState(-1)
-  const [inputVal, setInputVal]   = useState('')
-  const [savedInput, setSavedInput] = useState('')   // saved draft while browsing history
+  const [activeTab, setActiveTab] = useState<TerminalTabId>('serial')
 
-  // Auto-scroll on new lines
+  const serialRef = useRef<HTMLDivElement>(null)
+  const outputRef = useRef<HTMLDivElement>(null)
+  const shellRef = useRef<HTMLDivElement>(null)
+
+  const serialTerm = useRef<Terminal | null>(null)
+  const outputTerm = useRef<Terminal | null>(null)
+  const shellTerm = useRef<Terminal | null>(null)
+
+  const serialFit = useRef<FitAddon | null>(null)
+  const outputFit = useRef<FitAddon | null>(null)
+  const shellFit = useRef<FitAddon | null>(null)
+
+  const outputLinesCount = useRef(0)
+
+  // Initialization: Shell
   useEffect(() => {
-    bottomRef.current?.scrollIntoView({ behavior: 'auto' })
+    if (!shellTerm.current && shellRef.current) {
+      const term = new Terminal({
+        theme: { background: '#0A0D14', foreground: '#E2E8F0', cursor: '#6366F1' },
+        fontFamily: 'var(--font-code)', fontSize: 13, cursorBlink: true,
+      })
+      const fit = new FitAddon()
+      term.loadAddon(fit)
+      term.open(shellRef.current)
+      shellTerm.current = term
+      shellFit.current = fit
+      
+      // Start node-pty
+      ;(window as any).electronAPI.ptyStart().then(() => {
+        fit.fit()
+        ;(window as any).electronAPI.ptyResize(term.cols, term.rows)
+      })
+
+      const onDataDisposable = term.onData((data) => {
+        ;(window as any).electronAPI.ptyInput(data)
+      })
+
+      const removeListener = (window as any).electronAPI.onPtyOutput((data: string) => {
+        term.write(data)
+      })
+
+      return () => {
+        onDataDisposable.dispose()
+        removeListener()
+        term.dispose()
+        shellTerm.current = null
+      }
+    }
+  }, [])
+
+  // Initialization: Serial
+  useEffect(() => {
+    if (!serialTerm.current && serialRef.current) {
+      const term = new Terminal({
+        theme: { background: '#0A0D14', foreground: '#34D399', cursor: '#34D399' },
+        fontFamily: 'var(--font-code)', fontSize: 13, cursorBlink: true,
+      })
+      const fit = new FitAddon()
+      term.loadAddon(fit)
+      term.open(serialRef.current)
+      serialTerm.current = term
+      serialFit.current = fit
+
+      const onDataDisposable = term.onData((data) => {
+        ;(window as any).electronAPI.sendTerminalInput(data)
+      })
+
+      const removeListener = (window as any).electronAPI.onTerminalOutput((data: string) => {
+        term.write(data)
+      })
+
+      return () => {
+        onDataDisposable.dispose()
+        removeListener()
+        term.dispose()
+        serialTerm.current = null
+      }
+    }
+  }, [])
+  
+  // Initialization: Output
+  useEffect(() => {
+    if (!outputTerm.current && outputRef.current) {
+      const term = new Terminal({
+        theme: { background: '#0A0D14', foreground: '#A78BFA', cursor: 'transparent' },
+        fontFamily: 'var(--font-code)', fontSize: 13, disableStdin: true,
+      })
+      const fit = new FitAddon()
+      term.loadAddon(fit)
+      term.open(outputRef.current)
+      term.writeln('\x1b[35m[ElectroCODE IDE System Output]\x1b[0m')
+      outputTerm.current = term
+      outputFit.current = fit
+
+      return () => {
+        term.dispose()
+        outputTerm.current = null
+      }
+    }
+  }, [])
+
+  // Sync IDE system macro messages to Serial and Output tabs
+  useEffect(() => {
+    if (activeTerminal && outputTerm.current) {
+      if (activeTerminal.lines.length === 0) {
+        outputLinesCount.current = 0
+        outputTerm.current.clear()
+      } else if (activeTerminal.lines.length > outputLinesCount.current) {
+        for (let i = outputLinesCount.current; i < activeTerminal.lines.length; i++) {
+          const l = activeTerminal.lines[i]
+          outputTerm.current.writeln(l)
+          if (l.startsWith('>') || l.startsWith('❌') || l.startsWith('⚠') || l.includes('Error:')) {
+             // Let the user see IDE macros in the Serial stream slightly grayed
+             serialTerm.current?.writeln(`\x1b[90m${l}\x1b[0m`)
+          }
+        }
+        outputLinesCount.current = activeTerminal.lines.length
+      }
+    }
   }, [activeTerminal?.lines])
 
-  // Re-focus input when switching tabs
+  // Handle Resize
   useEffect(() => {
-    if (isConnected) inputRef.current?.focus()
-  }, [activeTerminalId, isConnected])
-
-  // ── Command submission ──────────────────────────────────────────────────────
-  const submitCommand = useCallback((cmd: string) => {
-    setInputVal('')
-    setHistIdx(-1)
-    setSavedInput('')
-
-    if (cmd.trim() === '') {
-      addTerminalLine(activeTerminalId, '>>>')
-      return
-    }
-
-    // Add to history (skip duplicates at top)
-    setHistory((prev) => {
-      if (prev[0] === cmd) return prev
-      return [cmd, ...prev].slice(0, 200)
-    })
-
-    addTerminalLine(activeTerminalId, `>>> ${cmd}`)
-
-    // ── Built-in REPL commands that we can handle client-side ────────────────
-    if (cmd === 'clear' || cmd === '%clear') {
-      clearTerminal(activeTerminalId)
-      return
-    }
-
-    if (cmd === 'help()' || cmd === 'help') {
-      addTerminalLine(activeTerminalId, 'Welcome to MicroPython!')
-      addTerminalLine(activeTerminalId, '')
-      addTerminalLine(activeTerminalId, 'For online docs please visit http://docs.micropython.org/')
-      addTerminalLine(activeTerminalId, '')
-      addTerminalLine(activeTerminalId, 'Control commands:')
-      addTerminalLine(activeTerminalId, '  CTRL-A -- on a blank line, enter raw REPL mode')
-      addTerminalLine(activeTerminalId, '  CTRL-B -- on a blank line, enter normal REPL mode')
-      addTerminalLine(activeTerminalId, '  CTRL-C -- interrupt a running program')
-      addTerminalLine(activeTerminalId, '  CTRL-D -- on a blank line, do a soft reset of the board')
-      addTerminalLine(activeTerminalId, '  CTRL-E -- on a blank line, enter paste mode')
-      addTerminalLine(activeTerminalId, '')
-      addTerminalLine(activeTerminalId, "For further help on a specific object, type help(obj)")
-      addTerminalLine(activeTerminalId, '>>>')
-      return
-    }
-
-    // ── Everything else gets forwarded to the device via the serial bridge ──
-    // Send command + newline to the device's REPL stdin
-    ;(window as any).electronAPI.sendTerminalInput(cmd + '\r\n')
-  }, [activeTerminalId, addTerminalLine, clearTerminal])
-
-  // ── Keyboard handler — matches Thonny's Shell key bindings exactly ──────────
-  function handleKeyDown(e: React.KeyboardEvent<HTMLInputElement>) {
-    // Ctrl+C — interrupt (KeyboardInterrupt)
-    if (e.ctrlKey && e.key === 'c') {
-      e.preventDefault()
-      setInputVal('')
-      setHistIdx(-1)
-      // Send actual CTRL+C byte (0x03) to device
-      ;(window as any).electronAPI.sendTerminalInput('\x03')
-      return
-    }
-
-    // Ctrl+D — soft reboot (only on blank line, like real MicroPython)
-    if (e.ctrlKey && e.key === 'd') {
-      e.preventDefault()
-      if (inputVal === '') {
-        // Send actual CTRL+D byte (0x04) to device
-        ;(window as any).electronAPI.sendTerminalInput('\x04')
+    const handleResize = () => {
+      if (activeTab === 'terminal' && shellFit.current && shellTerm.current) {
+        shellFit.current.fit()
+        ;(window as any).electronAPI.ptyResize(shellTerm.current.cols, shellTerm.current.rows)
       }
-      return
+      if (activeTab === 'serial' && serialFit.current) serialFit.current.fit()
+      if (activeTab === 'output' && outputFit.current) outputFit.current.fit()
     }
+    window.addEventListener('resize', handleResize)
+    setTimeout(handleResize, 20)
+    return () => window.removeEventListener('resize', handleResize)
+  }, [activeTab])
 
-    // Ctrl+L — clear screen (like most terminals)
-    if (e.ctrlKey && e.key === 'l') {
-      e.preventDefault()
-      clearTerminal(activeTerminalId)
-      return
-    }
+  const copyCurrentTerminal = () => {
+    let term: Terminal | null = null
+    if (activeTab === 'serial') term = serialTerm.current
+    if (activeTab === 'terminal') term = shellTerm.current
+    if (activeTab === 'output') term = outputTerm.current
 
-    // Enter — submit
-    if (e.key === 'Enter') {
-      e.preventDefault()
-      submitCommand(inputVal)
-      return
-    }
-
-    // Arrow Up — history back
-    if (e.key === 'ArrowUp') {
-      e.preventDefault()
-      if (history.length === 0) return
-      const newIdx = histIdx + 1
-      if (newIdx >= history.length) return
-      if (histIdx === -1) setSavedInput(inputVal) // save current draft
-      setHistIdx(newIdx)
-      setInputVal(history[newIdx])
-      return
-    }
-
-    // Arrow Down — history forward
-    if (e.key === 'ArrowDown') {
-      e.preventDefault()
-      if (histIdx <= 0) {
-        setHistIdx(-1)
-        setInputVal(savedInput)
-        return
-      }
-      const newIdx = histIdx - 1
-      setHistIdx(newIdx)
-      setInputVal(history[newIdx])
-      return
+    if (term && term.hasSelection()) {
+      navigator.clipboard.writeText(term.getSelection())
+      useAppStore.getState().showNotification('Selection copied to clipboard', 'success')
+    } else {
+      useAppStore.getState().showNotification('Select text in terminal to copy', 'info')
     }
   }
 
-  // ── Styles ──────────────────────────────────────────────────────────────────
-  const s = {
-    root: {
-      display: 'flex' as const,
-      flexDirection: 'column' as const,
-      height: '100%',
-      overflow: 'hidden',
-    },
-    tabBar: {
-      display: 'flex',
-      alignItems: 'stretch',
-      background: 'var(--bg-elevated)',
-      borderBottom: '1px solid var(--border)',
-      flexShrink: 0,
-      height: 32,
-      overflow: 'hidden',
-    },
-    tabList: {
-      display: 'flex',
-      flex: 1,
-      overflowX: 'auto' as const,
-      overflowY: 'hidden' as const,
-    },
-    tabActions: {
-      display: 'flex',
-      alignItems: 'center',
-      padding: '0 6px',
-      gap: 2,
-      borderLeft: '1px solid var(--border)',
-      flexShrink: 0,
-    },
-    iconBtn: {
-      width: 22, height: 22,
-    },
-    outputArea: {
-      flex: 1,
-      overflowY: 'auto' as const,
-      padding: '6px 10px',
-      cursor: 'text',
-      fontFamily: 'var(--font-code)',
-      fontSize: 13,
-      color: 'var(--text-primary)',
-      background: 'var(--bg-primary)',
-    },
-    promptRow: {
-      display: 'flex',
-      alignItems: 'center',
-      marginTop: 2,
-    },
-    promptChar: {
-      color: '#4ec9b0',
-      marginRight: 4,
-      fontFamily: 'var(--font-code)',
-      fontSize: 13,
-      userSelect: 'none' as const,
-      flexShrink: 0,
-    },
-    input: {
-      background: 'none',
-      border: 'none',
-      outline: 'none',
-      flex: 1,
-      color: 'var(--text-primary)',
-      fontFamily: 'var(--font-code)',
-      fontSize: 13,
-      lineHeight: '19px',
-      caretColor: 'var(--text-primary)',
-      minWidth: 0,
-    },
-    disconnectedBanner: {
-      display: 'flex',
-      alignItems: 'center',
-      justifyContent: 'center',
-      padding: '6px 10px',
-      fontSize: 12,
-      color: 'var(--text-dim)',
-      background: 'var(--bg-elevated)',
-      borderTop: '1px solid var(--border)',
-      flexShrink: 0,
-      gap: 6,
-    },
+  const askAIToFix = () => {
+    let term: Terminal | null = null
+    if (activeTab === 'serial') term = serialTerm.current
+    if (activeTab === 'terminal') term = shellTerm.current
+    if (activeTab === 'output') term = outputTerm.current
+
+    const text = term?.hasSelection() ? term.getSelection() : activeTerminal?.lines.slice(-30).join('\n')
+    
+    if (text) {
+      if (!useAppStore.getState().aiPanelOpen) toggleAiPanel()
+      addAiMessage({
+        role: 'user',
+        content: `Please help me fix or explain this output:\n\n\`\`\`\n${text}\n\`\`\``
+      })
+    } else {
+      useAppStore.getState().showNotification('Select text in terminal to ask AI', 'info')
+    }
   }
 
   return (
-    <div style={s.root}>
-      {/* ── Tab bar ─────────────────────────────────────────────────────────── */}
-      <div style={s.tabBar}>
-        <div style={s.tabList}>
-          {terminals.map((t) => (
-            <div
-              key={t.id}
-              className={`terminal-tab ${t.id === activeTerminalId ? 'active' : ''}`}
-              onClick={() => setActiveTerminal(t.id)}
+    <div style={{ display: 'flex', flexDirection: 'column', height: '100%', overflow: 'hidden', background: 'var(--bg-primary)' }}>
+      {/* Tab bar */}
+      <div style={{
+        display: 'flex', alignItems: 'stretch',
+        background: 'var(--bg-elevated)', borderBottom: '1px solid var(--border)',
+        flexShrink: 0, height: 36, gap: 2, padding: '4px 4px 0',
+      }}>
+        <div style={{ display: 'flex', flex: 1, gap: 2 }}>
+          {TERMINAL_TABS.map((tab) => (
+            <button
+              key={tab.id}
+              className={`terminal-tab ${activeTab === tab.id ? 'active' : ''}`}
+              onClick={() => setActiveTab(tab.id)}
+              style={{ position: 'relative' }}
             >
-              <span>{t.name}</span>
-              <button
-                style={{
-                  background: 'none', border: 'none', cursor: 'pointer',
-                  color: 'var(--text-dim)', display: 'flex', padding: 1,
-                  marginLeft: 4, borderRadius: 2,
-                }}
-                onClick={(e) => { e.stopPropagation(); closeTerminal(t.id) }}
-              >
-                <X size={10} />
-              </button>
-            </div>
+              {tab.icon}
+              <span>{tab.label}</span>
+            </button>
           ))}
         </div>
-
-        <div style={s.tabActions}>
-          <button className="icon-btn" title="New Terminal" onClick={addTerminal} style={s.iconBtn}>
-            <Plus size={13} />
+        <div style={{ display: 'flex', alignItems: 'center', padding: '0 6px', gap: 2, flexShrink: 0 }}>
+          <button className="icon-btn" title="Ask AI About Selection" onClick={askAIToFix} style={{ width: 24, height: 24, color: 'var(--accent)' }}>
+            <Zap size={13} />
           </button>
-          <button
-            className="icon-btn"
-            title="Clear Terminal  (Ctrl+L)"
-            onClick={() => activeTerminal && clearTerminal(activeTerminal.id)}
-            style={s.iconBtn}
+          <button className="icon-btn" title="Copy Selection" onClick={copyCurrentTerminal} style={{ width: 24, height: 24 }}>
+            <Copy size={13} />
+          </button>
+          <button className="icon-btn" title="Clear Terminal"
+            onClick={() => {
+              if (activeTab === 'serial' && serialTerm.current) { serialTerm.current.clear(); clearTerminal(activeTerminalId) }
+              if (activeTab === 'output' && outputTerm.current) { outputTerm.current.clear(); clearTerminal(activeTerminalId) }
+              if (activeTab === 'terminal' && shellTerm.current) shellTerm.current.clear()
+            }}
+            style={{ width: 24, height: 24 }}
           >
-            <Trash2 size={12} />
+            <Trash2 size={13} />
           </button>
         </div>
       </div>
 
-      {/* ── Output area ─────────────────────────────────────────────────────── */}
-      <div
-        ref={areaRef}
-        style={s.outputArea}
-        onClick={() => isConnected && inputRef.current?.focus()}
-      >
-        {activeTerminal?.lines.map((line, i) => (
-          <TerminalLine key={i} line={line} />
-        ))}
-
-        {/* Live REPL prompt — only shown when device is connected */}
-        {isConnected ? (
-          <div style={s.promptRow}>
-            <span style={s.promptChar}>&gt;&gt;&gt;</span>
-            <input
-              ref={inputRef}
-              type="text"
-              value={inputVal}
-              autoFocus
-              spellCheck={false}
-              autoComplete="off"
-              autoCorrect="off"
-              autoCapitalize="off"
-              onChange={(e) => {
-                setInputVal(e.target.value)
-                setHistIdx(-1)
-              }}
-              onKeyDown={handleKeyDown}
-              style={s.input}
-            />
-          </div>
-        ) : null}
-
-        <div ref={bottomRef} />
+      {/* Terminals Container */}
+      <div style={{ flex: 1, position: 'relative', padding: '8px 4px 4px', overflow: 'hidden' }}>
+        <div ref={serialRef} style={{ width: '100%', height: '100%', display: activeTab === 'serial' ? 'block' : 'none', overflow: 'hidden' }} />
+        <div ref={outputRef} style={{ width: '100%', height: '100%', display: activeTab === 'output' ? 'block' : 'none', overflow: 'hidden' }} />
+        <div ref={shellRef} style={{ width: '100%', height: '100%', display: activeTab === 'terminal' ? 'block' : 'none', overflow: 'hidden' }} />
       </div>
 
-      {/* ── Disconnected notice (like Thonny's grey bar) ─────────────────────── */}
-      {!isConnected && (
-        <div style={s.disconnectedBanner}>
-          <span style={{ width: 6, height: 6, borderRadius: '50%', background: '#666', display: 'inline-block' }} />
-          Backend not connected — select a port and connect to start a REPL session
+      {/* Disconnected notice for serial */}
+      {!isConnected && activeTab === 'serial' && (
+        <div style={{
+          display: 'flex', alignItems: 'center', justifyContent: 'center',
+          padding: '8px 12px', fontSize: 12, color: 'var(--text-dim)',
+          background: 'var(--bg-elevated)', borderTop: '1px solid var(--border)',
+          flexShrink: 0, gap: 8,
+        }}>
+          <span style={{
+            width: 6, height: 6, borderRadius: '50%',
+            background: 'var(--text-dim)', display: 'inline-block',
+          }} />
+          Hardware disconnected — connect a device to activate the REPL
         </div>
       )}
     </div>

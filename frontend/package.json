@@ -20,9 +20,11 @@
     "@xterm/addon-fit": "^0.11.0",
     "clsx": "^2.1.1",
     "lucide-react": "^1.7.0",
+    "node-pty": "^1.1.0",
     "react": "^18.2.0",
     "react-dom": "^18.2.0",
     "react-resizable-panels": "^4.7.6",
+    "serialport": "^13.0.0",
     "tailwind-merge": "^3.5.0",
     "xterm": "^5.3.0",
     "zustand": "^5.0.12"

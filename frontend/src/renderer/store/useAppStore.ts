@@ -251,6 +251,8 @@ const defaultTree: FileNode[] = [];
 interface AppStore {
   // Setup
   setupComplete: boolean;
+  apiKey: string | null;
+  setApiKey: (key: string) => void;
   apiConfig: APIConfig | null;
   completeSetup: (config: APIConfig) => void;
   updateAPIConfig: (config: APIConfig) => void;
@@ -395,19 +397,34 @@ export const useAppStore = create<AppStore>()(
     (set, get) => ({
       // Setup
       setupComplete: false,
+      apiKey: null,
+      setApiKey: async (key: string) => {
+        set({ apiKey: key });
+        const currentConfig = get().apiConfig;
+        if (currentConfig) {
+          const newConfig = { ...currentConfig, apiKey: key };
+          set({ apiConfig: newConfig });
+          await (window as any).electronAPI.saveApiSettings(newConfig);
+        } else {
+          // Default config if none exists
+          const newConfig: APIConfig = { provider: 'openai', model: 'gpt-4o', apiKey: key };
+          set({ apiConfig: newConfig, setupComplete: true });
+          await (window as any).electronAPI.saveApiSettings(newConfig);
+        }
+      },
       apiConfig: null,
       completeSetup: async (config) => {
-        set({ setupComplete: true, apiConfig: config });
+        set({ setupComplete: true, apiConfig: config, apiKey: config.apiKey });
         await (window as any).electronAPI.saveApiSettings(config);
       },
       updateAPIConfig: async (config) => {
-        set({ apiConfig: config });
+        set({ apiConfig: config, apiKey: config.apiKey });
         await (window as any).electronAPI.saveApiSettings(config);
       },
       loadAPIConfig: async () => {
         const config = await (window as any).electronAPI.loadApiSettings();
         if (config) {
-          set({ apiConfig: config, setupComplete: true });
+          set({ apiConfig: config, apiKey: config.apiKey, setupComplete: true });
         }
       },
 

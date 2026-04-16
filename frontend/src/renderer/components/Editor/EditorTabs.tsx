@@ -17,7 +17,7 @@ export default function EditorTabs() {
   if (tabs.length === 0) return (
     <div
       className="tabs-bar"
-      style={{ borderBottom: '1px solid var(--border)', background: 'var(--tab-inactive)' }}
+      style={{ borderBottom: '1px solid var(--border)', background: 'var(--bg-base)' }}
     />
   )
 
@@ -93,7 +93,7 @@ export default function EditorTabs() {
           className="btn-icon" 
           onClick={handleRun} 
           title="Run Current File"
-          style={{ padding: 6, display: 'flex', alignItems: 'center', justifyContent: 'center', color: 'var(--text-primary)', background: 'transparent', border: 'none', borderRadius: 4, cursor: 'pointer' }}
+          style={{ padding: 6, display: 'flex', alignItems: 'center', justifyContent: 'center', color: 'var(--text-primary)', background: 'transparent', border: 'none', borderRadius: 'var(--radius-sm)', cursor: 'pointer', transition: 'all 0.15s ease' }}
         >
           <Play size={16} />
         </button>
@@ -101,7 +101,7 @@ export default function EditorTabs() {
           className="btn-icon" 
           onClick={handleStop} 
           title="Stop Execution"
-          style={{ padding: 6, display: 'flex', alignItems: 'center', justifyContent: 'center', color: '#ff4d4f', background: 'transparent', border: 'none', borderRadius: 4, cursor: 'pointer' }}
+          style={{ padding: 6, display: 'flex', alignItems: 'center', justifyContent: 'center', color: 'var(--red)', background: 'transparent', border: 'none', borderRadius: 'var(--radius-sm)', cursor: 'pointer', transition: 'all 0.15s ease' }}
         >
           <Square size={16} />
         </button>
@@ -111,7 +111,7 @@ export default function EditorTabs() {
             className="btn-icon" 
             onClick={handleSaveClick} 
             title="Save / Deploy"
-            style={{ padding: 6, display: 'flex', alignItems: 'center', justifyContent: 'center', color: 'var(--text-secondary)', background: 'transparent', border: 'none', borderRadius: 4, cursor: 'pointer' }}
+            style={{ padding: 6, display: 'flex', alignItems: 'center', justifyContent: 'center', color: 'var(--text-secondary)', background: 'transparent', border: 'none', borderRadius: 'var(--radius-sm)', cursor: 'pointer', transition: 'all 0.15s ease' }}
           >
             <Save size={16} />
           </button>
@@ -121,12 +121,12 @@ export default function EditorTabs() {
       {/* The Centered Save Modal Overlay */}
       {savePromptOpen && (
         <div style={{
-           position: 'fixed', inset: 0, backgroundColor: 'rgba(0,0,0,0.6)', zIndex: 9999,
-           display: 'flex', alignItems: 'center', justifyContent: 'center', backdropFilter: 'blur(2px)'
+           position: 'fixed', inset: 0, backgroundColor: 'rgba(0,0,0,0.65)', zIndex: 9999,
+           display: 'flex', alignItems: 'center', justifyContent: 'center', backdropFilter: 'blur(4px)'
         }}>
-           <div className="anim-fade" style={{
-               background: 'var(--surface)', padding: 24, borderRadius: 8, maxWidth: 400, width: '100%',
-               boxShadow: '0 8px 32px rgba(0,0,0,0.5)', border: '1px solid var(--border)'
+           <div className="anim-scale-in" style={{
+               background: 'var(--bg-elevated)', padding: 24, borderRadius: 'var(--radius-lg)', maxWidth: 400, width: '100%',
+               boxShadow: 'var(--shadow-lg)', border: '1px solid var(--border-light)'
            }}>
               <h3 style={{ margin: '0 0 12px 0', display: 'flex', alignItems: 'center', gap: 8 }}>
                 <Save size={18} color="var(--accent)" /> Save File: {activeTab?.name}
@@ -136,8 +136,8 @@ export default function EditorTabs() {
               </p>
               <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
                  <button onClick={saveToLocal} style={{
-                    display: 'flex', alignItems: 'center', gap: 12, padding: 12, borderRadius: 6,
-                    background: 'var(--tab-inactive)', border: '1px solid var(--border)', cursor: 'pointer',
+                    display: 'flex', alignItems: 'center', gap: 12, padding: 14, borderRadius: 'var(--radius)',
+                    background: 'var(--bg-surface)', border: '1px solid var(--border)', cursor: 'pointer', transition: 'all 0.15s ease',
                     color: 'var(--text-primary)', textAlign: 'left', fontWeight: 500
                  }}>
                     <HardDrive size={18} color="var(--text-primary)" />
@@ -148,8 +148,8 @@ export default function EditorTabs() {
                  </button>
                  
                  <button onClick={saveToDevice} style={{
-                    display: 'flex', alignItems: 'center', gap: 12, padding: 12, borderRadius: 6,
-                    background: 'var(--tab-inactive)', border: '1px solid var(--border)', cursor: 'pointer',
+                    display: 'flex', alignItems: 'center', gap: 12, padding: 14, borderRadius: 'var(--radius)',
+                    background: 'var(--bg-surface)', border: '1px solid var(--border)', cursor: 'pointer', transition: 'all 0.15s ease',
                     color: 'var(--text-primary)', textAlign: 'left', fontWeight: 500
                  }}>
                     <Cpu size={18} color="var(--accent)" />

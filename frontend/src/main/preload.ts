@@ -77,6 +77,16 @@ contextBridge.exposeInMainWorld("electronAPI", {
   // Terminal REPL input — send keystrokes to device
   sendTerminalInput: (data: string) => ipcRenderer.invoke("terminal:sendInput", data),
 
+  // PTY Shell API
+  ptyStart: (workspacePath?: string) => ipcRenderer.invoke("pty:start", workspacePath),
+  ptyInput: (data: string) => ipcRenderer.invoke("pty:input", data),
+  ptyResize: (cols: number, rows: number) => ipcRenderer.invoke("pty:resize", { cols, rows }),
+  onPtyOutput: (cb: (data: string) => void) => {
+    const handler = (_: any, data: string) => cb(data);
+    ipcRenderer.on("pty:output", handler);
+    return () => ipcRenderer.off("pty:output", handler);
+  },
+
   // Firmware installation
   listVolumes: () => ipcRenderer.invoke("firmware:listVolumes"),
   installFirmware: (args: any) => ipcRenderer.invoke("firmware:install", args),

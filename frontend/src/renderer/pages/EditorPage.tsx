@@ -245,7 +245,7 @@ export default function EditorPage() {
         </div>
 
         <div className="statusbar-item" title="Connection">
-          <Circle size={7} fill={isConnected ? '#4ec9b0' : '#666'} stroke="none" />
+          <Circle size={7} fill={isConnected ? 'var(--green)' : 'var(--text-dim)'} stroke="none" />
           <span>{isConnected ? selectedPort ?? 'Connected' : 'Not Connected'}</span>
         </div>
 
@@ -331,7 +331,7 @@ export default function EditorPage() {
           position: 'fixed', inset: 0, backgroundColor: 'rgba(0,0,0,0.5)', zIndex: 9999,
           display: 'flex', alignItems: 'center', justifyContent: 'center'
         }}>
-          <div className="anim-fade" style={{ background: 'var(--bg-surface)', padding: 20, borderRadius: 8, width: 300, border: '1px solid var(--border)' }}>
+          <div className="anim-scale-in" style={{ background: 'var(--bg-surface)', padding: 24, borderRadius: 'var(--radius-lg)', width: 320, border: '1px solid var(--border-light)', boxShadow: 'var(--shadow-lg)' }}>
             <h3 style={{ margin: '0 0 10px 0', fontSize: 14 }}>{promptConfig.msg}</h3>
             <input 
               autoFocus

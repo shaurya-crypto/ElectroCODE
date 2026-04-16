@@ -1,12 +1,12 @@
-const { contextBridge: t, ipcRenderer: i } = require("electron"), a = /* @__PURE__ */ new WeakMap();
-t.exposeInMainWorld("ipcRenderer", {
+const { contextBridge: a, ipcRenderer: i } = require("electron"), t = /* @__PURE__ */ new WeakMap();
+a.exposeInMainWorld("ipcRenderer", {
   on(e, n) {
     const o = (r, ...l) => n(r, ...l);
-    return a.set(n, o), i.on(e, o);
+    return t.set(n, o), i.on(e, o);
   },
   off(e, n) {
-    const o = a.get(n);
-    o && (i.off(e, o), a.delete(n));
+    const o = t.get(n);
+    o && (i.off(e, o), t.delete(n));
   },
   send(...e) {
     const [n, ...o] = e;
@@ -17,7 +17,7 @@ t.exposeInMainWorld("ipcRenderer", {
     return i.invoke(n, ...o);
   }
 });
-t.exposeInMainWorld("electronAPI", {
+a.exposeInMainWorld("electronAPI", {
   // Hardware
   listPorts: () => i.invoke("hardware:listPorts"),
   checkChip: (e) => i.invoke("hardware:checkChip", e),
@@ -57,6 +57,14 @@ t.exposeInMainWorld("electronAPI", {
   },
   // Terminal REPL input — send keystrokes to device
   sendTerminalInput: (e) => i.invoke("terminal:sendInput", e),
+  // PTY Shell API
+  ptyStart: (e) => i.invoke("pty:start", e),
+  ptyInput: (e) => i.invoke("pty:input", e),
+  ptyResize: (e, n) => i.invoke("pty:resize", { cols: e, rows: n }),
+  onPtyOutput: (e) => {
+    const n = (o, r) => e(r);
+    return i.on("pty:output", n), () => i.off("pty:output", n);
+  },
   // Firmware installation
   listVolumes: () => i.invoke("firmware:listVolumes"),
   installFirmware: (e) => i.invoke("firmware:install", e),
