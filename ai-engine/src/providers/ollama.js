@@ -1,10 +1,8 @@
 const { buildSystemPrompt } = require("./systemPrompt");
 
 async function generate(config, userPrompt, context, mode, activeFile, referencedFiles) {
-  // Explicit fallback logic the user demanded for ollama defaults
   const baseURL = config.baseUrl || "http://localhost:11434";
   const modelVer = config.model || "llama3.1";
-  
   const systemText = buildSystemPrompt(context, mode, activeFile, referencedFiles);
 
   const response = await fetch(baseURL + "/api/chat", {
@@ -13,7 +11,7 @@ async function generate(config, userPrompt, context, mode, activeFile, reference
     body: JSON.stringify({
       model: modelVer,
       stream: false,
-      format: "json", // Instructs Ollama strictly
+      // NO format: "json" — we accept natural Markdown
       messages: [
         { role: "system", content: systemText },
         { role: "user", content: userPrompt }
@@ -26,7 +24,31 @@ async function generate(config, userPrompt, context, mode, activeFile, reference
   }
 
   const json = await response.json();
-  return JSON.parse(json.message.content);
+  const rawText = json.message.content;
+  return parseMarkdownResponse(rawText);
 }
 
 module.exports = { generate };
+
+function parseMarkdownResponse(text) {
+  const codeBlockRegex = /```(\w*)\n([\s\S]*?)```/g;
+  const codeBlocks = [];
+  let match;
+
+  while ((match = codeBlockRegex.exec(text)) !== null) {
+    codeBlocks.push({ language: match[1] || "python", code: match[2].trimEnd() });
+  }
+
+  const explanation = text.replace(codeBlockRegex, "").trim();
+
+  if (codeBlocks.length > 0) {
+    const primaryCode = codeBlocks.reduce((a, b) => a.code.length >= b.code.length ? a : b);
+    return {
+      type: "code_update",
+      code: primaryCode.code,
+      explanation: explanation || "Here are the code changes."
+    };
+  }
+
+  return { type: "chat", payload: text };
+}

@@ -1,17 +1,41 @@
-function formatResponseToEditorDiff(jsonPayload) {
-  // If the payload is already strict JSON format coming from our AI Engine:
-  if (jsonPayload && jsonPayload.type === 'code_update') {
+/**
+ * Formats AI response for the frontend editor.
+ * Now handles both structured (code_update/chat) and raw Markdown responses.
+ */
+function formatResponseToEditorDiff(responsePayload) {
+  // Structured response from our new Markdown parser
+  if (responsePayload && responsePayload.type === 'code_update') {
     return {
       type: 'code_update',
-      code: jsonPayload.code || '',
-      explanation: jsonPayload.explanation || 'Updated code.'
+      code: responsePayload.code || '',
+      explanation: responsePayload.explanation || 'Updated code.'
     };
   }
 
-  // Legacy fallback if the string parser accidentally leaks through (or Ollama fails formatting)
-  let text = typeof jsonPayload === 'string' ? jsonPayload : JSON.stringify(jsonPayload);
+  // Chat/conversational response
+  if (responsePayload && responsePayload.type === 'chat') {
+    return {
+      type: 'chat',
+      payload: responsePayload.payload || ''
+    };
+  }
+
+  // Fallback: treat as plain text
+  let text = typeof responsePayload === 'string' ? responsePayload : JSON.stringify(responsePayload);
+  
+  // Try to extract code blocks from raw text (safety net)
+  const codeMatch = text.match(/```\w*\n([\s\S]*?)```/);
+  if (codeMatch) {
+    const explanation = text.replace(/```\w*\n[\s\S]*?```/g, '').trim();
+    return {
+      type: 'code_update',
+      code: codeMatch[1].trimEnd(),
+      explanation: explanation || 'Code generated.'
+    };
+  }
+
   return {
-    type: "legacy_insert",
+    type: "chat",
     payload: text
   };
 }
