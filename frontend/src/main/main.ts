@@ -34,7 +34,8 @@ function getResourcePath(subPath: string): string {
     return path.join(process.env.APP_ROOT!, "..", subPath);
   }
   // Production: Use process.resourcesPath for bundled folders
-  return path.join(process.resourcesPath, subPath);
+  // All backend resources are nested under _internal/ to keep the install directory clean
+  return path.join(process.resourcesPath, "_internal", subPath);
 }
 
 function getPythonExe(): string {
@@ -1165,22 +1166,30 @@ if not success:
   });
 }
 
-function startMcpServer() {
+function startMcpServer(retryCount = 0) {
   const mcpPath = getResourcePath(path.join("mcp-server", "src", "server.js"));
+  const mcpRoot = getResourcePath("mcp-server");
 
   if (fs.existsSync(mcpPath)) {
     console.log(`[ElectroAI] Starting MCP Server at ${mcpPath}...`);
     // Use the bundled Node.js executable provided by Electron!
     // This allows it to run even if Node.js isn't installed.
     mcpProcess = spawn(process.execPath, [mcpPath], {
-      cwd: path.dirname(path.dirname(mcpPath)),
+      cwd: mcpRoot,
       stdio: "pipe",
-      env: { ...process.env, ELECTRON_RUN_AS_NODE: "1", PORT: "4000", WS_PORT: "4001" } 
+      env: {
+        ...process.env,
+        ELECTRON_RUN_AS_NODE: "1",
+        PORT: "4000",
+        WS_PORT: "4001",
+        // Ensure require() can find node_modules in the bundled mcp-server
+        NODE_PATH: path.join(mcpRoot, "node_modules"),
+      }
     });
 
     const mcpLogFile = path.join(app.getPath('userData'), 'mcp_debug.log');
     fs.appendFileSync(mcpLogFile, `\n--- STARTING MCP SERVER at ${new Date().toISOString()} ---\n`);
-    fs.appendFileSync(mcpLogFile, `mcpPath: ${mcpPath}\ncwd: ${path.dirname(path.dirname(mcpPath))}\n`);
+    fs.appendFileSync(mcpLogFile, `mcpPath: ${mcpPath}\ncwd: ${mcpRoot}\nNODE_PATH: ${path.join(mcpRoot, "node_modules")}\nretry: ${retryCount}\n`);
 
     mcpProcess.stdout?.on("data", data => {
       console.log(`[MCP] ${data}`);
@@ -1200,9 +1209,19 @@ function startMcpServer() {
     mcpProcess.on("close", (code) => {
       console.log(`[ElectroAI] MCP Server exited with code ${code}`);
       fs.appendFileSync(mcpLogFile, `[EXIT] Code ${code}\n`);
+      mcpProcess = null;
+
+      // Auto-restart on crash (max 3 attempts)
+      if (code !== 0 && code !== null && retryCount < 3) {
+        console.log(`[ElectroAI] MCP crashed — restarting (attempt ${retryCount + 1}/3)...`);
+        fs.appendFileSync(mcpLogFile, `[RESTART] Attempt ${retryCount + 1}/3\n`);
+        setTimeout(() => startMcpServer(retryCount + 1), 2000);
+      }
     });
   } else {
     console.warn(`[ElectroAI] MCP Server not found at ${mcpPath}`);
+    const mcpLogFile = path.join(app.getPath('userData'), 'mcp_debug.log');
+    fs.appendFileSync(mcpLogFile, `\n[NOT FOUND] ${mcpPath}\nresourcesPath: ${process.resourcesPath}\nisPackaged: ${app.isPackaged}\n`);
   }
 }
 

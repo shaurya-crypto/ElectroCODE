@@ -1,5 +1,5 @@
 module.exports = {
-  PORT: process.env.PORT || 5000,
+  PORT: process.env.PORT || 4000,
   WS_PORT: process.env.WS_PORT || 4001,
   MAX_SERIAL_LOG_LINES: 100,
   AI_API_TIMEOUT_MS: 15000,

@@ -4,6 +4,7 @@
   "appId": "com.electroai.electrocode",
   "asar": true,
   "productName": "Electro CODE",
+  "afterPack": "./scripts/afterPack.cjs",
   "directories": {
     "output": "release/${version}"
   },
@@ -14,31 +15,34 @@
   "extraResources": [
     {
       "from": "../mcp-server",
-      "to": "mcp-server",
+      "to": "_internal/mcp-server",
       "filter": [
         "src/**/*",
-        "config/**/*",
         "package.json",
-        "node_modules/**/*"
+        "node_modules/**"
       ]
     },
     {
       "from": "../ai-engine",
-      "to": "ai-engine",
+      "to": "_internal/ai-engine",
       "filter": [
         "src/**/*",
         "package.json",
-        "node_modules/**/*"
+        "node_modules/**"
       ]
     },
     {
       "from": "../firmware-tools",
-      "to": "firmware-tools",
+      "to": "_internal/firmware-tools",
       "filter": [
         "**/*",
-        "!__pycache__/*",
+        "!__pycache__/**",
         "!**/*.pyc"
       ]
+    },
+    {
+      "from": "src/assets/icon.ico",
+      "to": "icon.ico"
     }
   ],
   "mac": {
@@ -47,6 +51,7 @@
     "category": "public.app-category.developer-tools"
   },
   "win": {
+    "icon": "src/assets/icon.ico",
     "target": [
       {
         "target": "nsis",
@@ -59,7 +64,10 @@
     "oneClick": false,
     "perMachine": false,
     "allowToChangeInstallationDirectory": true,
-    "deleteAppDataOnUninstall": false
+    "deleteAppDataOnUninstall": false,
+    "createDesktopShortcut": true,
+    "createStartMenuShortcut": true,
+    "shortcutName": "ElectroCODE"
   },
   "linux": {
     "target": ["AppImage", "deb"],
