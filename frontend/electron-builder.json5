@@ -1,9 +1,9 @@
-// @see - https://www.electron.build/configuration/configuration
 {
   "$schema": "https://raw.githubusercontent.com/electron-userland/electron-builder/master/packages/app-builder-lib/scheme.json",
   "appId": "com.electroai.electrocode",
   "asar": true,
   "productName": "Electro CODE",
+  "forceCodeSigning": false,
   "afterPack": "./scripts/afterPack.cjs",
   "directories": {
     "output": "release/${version}"
@@ -18,8 +18,7 @@
       "to": "_internal/mcp-server",
       "filter": [
         "src/**/*",
-        "package.json",
-        "node_modules/**"
+        "package.json"
       ]
     },
     {
@@ -27,8 +26,7 @@
       "to": "_internal/ai-engine",
       "filter": [
         "src/**/*",
-        "package.json",
-        "node_modules/**"
+        "package.json"
       ]
     },
     {
@@ -51,14 +49,14 @@
     "category": "public.app-category.developer-tools"
   },
   "win": {
-    "icon": "src/assets/icon.ico",
-    "target": [
-      {
-        "target": "nsis",
-        "arch": ["x64"]
-      }
-    ],
-    "artifactName": "${productName}-Windows-${version}-Setup.${ext}"
+      "icon": "src/assets/icon.ico",
+      "target": [
+        {
+          "target": "nsis", // <-- Change this to nsis
+          "arch": ["x64"]
+        }
+      ],
+      "artifactName": "${productName}.${ext}"
   },
   "nsis": {
     "oneClick": false,
@@ -73,5 +71,6 @@
     "target": ["AppImage", "deb"],
     "category": "Development",
     "artifactName": "${productName}-Linux-${version}-${arch}.${ext}"
-  }
+  },
+  "npmRebuild": false
 }
